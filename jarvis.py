@@ -21,10 +21,14 @@ warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
 
 import numpy as np
 
-# Audio config
-RATE = 16000
-CHANNELS = 1
-CHUNK = 1280  # 80ms at 16kHz - openwakeword expects this
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from config import (
+    RATE, CHANNELS, CHUNK,
+    VAD_THRESHOLD, VAD_CHUNK, SILENCE_DURATION, SILENCE_RATIO, MAX_RECORD_SECONDS,
+    WAKE_WORD_THRESHOLD, CLAUDE_TIMEOUT, INITIAL_ACK_DELAY,
+    ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
+    STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
+)
 
 # PulseAudio simple API via ctypes
 _pulse_simple = ctypes.cdll.LoadLibrary("libpulse-simple.so.0")
@@ -130,57 +134,6 @@ class PulsePlayer:
             self._pa = None
 
 
-# Silence detection config (Silero VAD)
-VAD_THRESHOLD = 0.5            # speech probability threshold
-VAD_CHUNK = 512                # Silero requires 512 samples at 16kHz
-SILENCE_DURATION = 1.0         # seconds of silence after speech to stop
-SILENCE_RATIO = 0.8            # fraction of silence window that must be quiet
-MAX_RECORD_SECONDS = 15        # safety cap
-
-# Spoken acknowledgements while waiting for Claude API response
-ACKNOWLEDGEMENTS = [
-    "Let me think about that.",
-    "One moment.",
-    "Working on it.",
-    "Give me a second.",
-    "On it.",
-    "Let me look into that.",
-    "Hmm, let me see.",
-    "Just a moment.",
-]
-
-# Secondary acknowledgements for long-running requests (spoken every few seconds)
-STILL_WORKING = [
-    "Still working on it.",
-    "Almost there.",
-    "Still thinking.",
-    "Hang on, still going.",
-    "Bear with me.",
-    "Still on it.",
-]
-
-STILL_WORKING_INTERVAL = 5  # seconds between secondary acknowledgements
-
-# Startup and shutdown messages
-STARTUP_MESSAGES = [
-    "Jarvis is ready.",
-    "At your service.",
-    "Online and listening.",
-    "Ready when you are.",
-    "All systems go.",
-    "Standing by.",
-]
-
-SHUTDOWN_MESSAGES = [
-    "Shutting down. Goodbye.",
-    "Going offline. See you later.",
-    "Powering down. Take care.",
-    "Signing off.",
-    "Going to sleep. Goodbye.",
-    "Until next time.",
-]
-
-
 def load_models():
     """Load wake word and whisper models."""
     print("Loading wake word model...")
@@ -277,20 +230,14 @@ def transcribe(whisper_model, audio_bytes):
         os.unlink(tmp_path)
 
 
-def speak(tts_voice, text, stop_event=None):
-    """Speak text aloud using piper TTS, streaming via PulseAudio.
-
-    If stop_event is provided and gets set, playback is flushed and returns early.
-    """
+def speak(tts_voice, text):
+    """Speak text aloud using piper TTS, streaming via PulseAudio."""
     if not text:
         return
 
     player = PulsePlayer(rate=tts_voice.config.sample_rate)
     try:
         for chunk in tts_voice.synthesize(text):
-            if stop_event and stop_event.is_set():
-                player.flush()
-                return
             audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
             player.write(audio_int16.tobytes())
         player.drain()
@@ -331,7 +278,7 @@ def send_to_claude(text, first_call=[True]):
             cmd,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=CLAUDE_TIMEOUT,
             env=env,
         )
         response = result.stdout.strip()
@@ -343,7 +290,7 @@ def send_to_claude(text, first_call=[True]):
         error_logger.error("'claude' command not found")
         return "Error: 'claude' command not found. Is Claude Code installed?"
     except subprocess.TimeoutExpired:
-        error_logger.error("Claude timed out after 300 seconds for prompt: %s", text[:200])
+        error_logger.error("Claude timed out after %d seconds for prompt: %s", CLAUDE_TIMEOUT, text[:200])
         return "Error: Claude Code timed out."
 
 
@@ -367,14 +314,8 @@ def main():
     print("\n=== Jarvis is ready. Say 'Hey Jarvis' to activate. ===\n")
     speak(tts_voice, random.choice(STARTUP_MESSAGES))
 
-    pending_text = None  # Set when wake word interrupts speech
-
     while True:
-        if pending_text:
-            text = pending_text
-            pending_text = None
-        else:
-            # Read audio chunk for wake word detection
+        # Read audio chunk for wake word detection
             data = stream.read(CHUNK, exception_on_overflow=False)
             audio_data = np.frombuffer(data, dtype=np.int16)
 
@@ -384,7 +325,7 @@ def main():
             # Check for wake word activation
             activated = False
             for model_name, score in prediction.items():
-                if score > 0.8:
+                if score > WAKE_WORD_THRESHOLD:
                     activated = True
                     break
             if not activated:
@@ -448,7 +389,7 @@ def main():
 
         threading.Thread(target=claude_worker, daemon=True).start()
 
-        if not done_event.wait(timeout=10.0):
+        if not done_event.wait(timeout=INITIAL_ACK_DELAY):
             speak(tts_voice, random.choice(ACKNOWLEDGEMENTS))
             while not done_event.wait(timeout=STILL_WORKING_INTERVAL):
                 speak(tts_voice, random.choice(STILL_WORKING))
@@ -457,38 +398,9 @@ def main():
         conversation_logger.info("CLAUDE: %s", response)
         print(f"\nClaude: {response}\n")
 
-        # Speak response in background thread, monitor for wake word interrupt
-        stop_speaking = threading.Event()
-        speak_thread = threading.Thread(
-            target=speak, args=(tts_voice, response, stop_speaking), daemon=True
-        )
-        speak_thread.start()
-
-        interrupted = False
-        while speak_thread.is_alive():
-            data = stream.read(CHUNK, exception_on_overflow=False)
-            audio_data = np.frombuffer(data, dtype=np.int16)
-            prediction = wake_model.predict(audio_data)
-            for model_name, ww_score in prediction.items():
-                if ww_score > 0.8:
-                    print("\n*** Wake word detected during speech — interrupting ***")
-                    stop_speaking.set()
-                    speak_thread.join()
-                    interrupted = True
-                    break
-            if interrupted:
-                break
-
-        speak_thread.join()
-
-        if interrupted:
-            wake_model.reset()
-            audio_bytes = record_until_silence(stream, vad_model)
-            text = transcribe(whisper_model, audio_bytes)
-            if text:
-                print(f"Transcribed: {text}")
-                conversation_logger.info("USER: %s", text)
-                pending_text = text
+        # Speak response (blocking — mic is not monitored to avoid
+        # self-triggering from TTS audio picked up by the microphone)
+        speak(tts_voice, response)
 
         # Reset wake word model state
         wake_model.reset()

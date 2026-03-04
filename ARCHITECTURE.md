@@ -2,6 +2,16 @@
 
 Voice assistant that listens for a wake word, records speech, transcribes it, sends it to Claude Code, and speaks the response aloud.
 
+## Project Structure
+
+- `jarvis.py` — Main application code.
+- `config/config.py` — All tunable constants and spoken message lists.
+- `agents/main/CLAUDE.md` — System prompt for Claude Code sessions.
+- `logs/` — Runtime logs (gitignored): `error.log`, `conversation.log`.
+- `voices/` — Piper TTS voice models (downloaded on first run).
+- `jarvis.sh` — Launcher script with auto-restart on exit code 42.
+- `jarvis.service` — systemd unit file.
+
 ## Components
 
 ### Audio I/O (`PulseRecorder`, `PulsePlayer`)
@@ -12,7 +22,7 @@ Direct PulseAudio access via ctypes (libpulse-simple). No PyAudio dependency.
 ### Wake Word Detection (openwakeword)
 Uses the `hey_jarvis_v0.1.onnx` model from openwakeword. Runs on ONNX runtime.
 - Feeds 1280-sample (80ms) chunks continuously.
-- Activation threshold: 0.8.
+- Activation threshold: configurable (`WAKE_WORD_THRESHOLD`, default 0.8).
 
 ### Voice Activity Detection (Silero VAD)
 ML-based speech/silence detection using `silero-vad` (ONNX mode).
@@ -20,7 +30,6 @@ ML-based speech/silence detection using `silero-vad` (ONNX mode).
 - Speech probability > 0.5 = speech detected.
 - End-of-speech: rolling window of 1.0s must be 80% silent.
 - Safety cap: 15 seconds max recording.
-- Replaced previous RMS-based `NoiseTracker` approach which was unreliable with background noise.
 
 ### Speech-to-Text (faster-whisper)
 Uses `small.en` model with int8 quantization on CPU.
@@ -29,13 +38,13 @@ Uses `small.en` model with int8 quantization on CPU.
 ### Text-to-Speech (Piper)
 Uses `en_US-lessac-medium` voice model.
 - Streams synthesized audio chunks to PulsePlayer.
-- Supports interruptible playback via `stop_event`.
+- Playback is blocking — microphone is not monitored during TTS to prevent self-triggering (the mic picking up the speaker output and detecting a false wake word).
 
 ### Claude Code Integration
 Sends transcribed text to `claude` CLI in a subprocess.
 - Uses session IDs for conversation continuity (`--session-id` / `--resume`).
-- 300-second timeout per request.
-- Spoken acknowledgements ("Let me think...") if response takes >10 seconds.
+- Configurable timeout (`CLAUDE_TIMEOUT`, default 300s).
+- Spoken acknowledgements if response takes longer than `INITIAL_ACK_DELAY` (default 10s).
 
 ### Built-in Commands
 Handled locally without calling Claude:
@@ -48,18 +57,23 @@ Handled locally without calling Claude:
 3. Transcribe with faster-whisper.
 4. Check for built-in commands.
 5. Send to Claude Code (with timeout-based spoken fillers).
-6. Speak response in background thread while monitoring for wake word interrupt.
-7. If interrupted mid-speech, record new utterance and loop back.
+6. Speak response (blocking).
+7. Reset wake word model state, loop back.
 
-## Key Constants
+## Configuration
+All tunable constants live in `config/config.py`. Key values:
+
 | Constant | Value | Purpose |
 |---|---|---|
 | RATE | 16000 | Audio sample rate (Hz) |
 | CHUNK | 1280 | Wake word detection chunk size (80ms) |
 | VAD_CHUNK | 512 | Silero VAD chunk size (32ms) |
 | VAD_THRESHOLD | 0.5 | Speech probability threshold |
+| WAKE_WORD_THRESHOLD | 0.8 | Wake word activation threshold |
 | SILENCE_DURATION | 1.0s | Silence window to end recording |
 | MAX_RECORD_SECONDS | 15 | Recording safety cap |
+| CLAUDE_TIMEOUT | 300 | Claude API timeout (seconds) |
+| INITIAL_ACK_DELAY | 10.0 | Seconds before first spoken filler |
 
 ## Dependencies
 - **openwakeword**: Wake word detection (ONNX)
