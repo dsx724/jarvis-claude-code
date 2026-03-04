@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
 import wave
 
@@ -252,11 +253,21 @@ def main():
 
                 print(f"Transcribed: {text}")
 
-                # Acknowledge so the user knows we heard them
-                speak(tts_voice, "Let me think about that.")
+                # Send to Claude, with a spoken filler if it takes too long
+                result_holder = {}
+                done_event = threading.Event()
 
-                # Send to Claude
-                response = send_to_claude(text)
+                def claude_worker():
+                    result_holder["response"] = send_to_claude(text)
+                    done_event.set()
+
+                threading.Thread(target=claude_worker, daemon=True).start()
+
+                if not done_event.wait(timeout=1.0):
+                    speak(tts_voice, "Let me think about that.")
+                    done_event.wait()
+
+                response = result_holder["response"]
                 print(f"\nClaude: {response}\n")
 
                 # Speak response
