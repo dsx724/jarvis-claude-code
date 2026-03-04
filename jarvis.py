@@ -52,6 +52,19 @@ _pulse_simple.pa_simple_read.argtypes = [
 ]
 _pulse_simple.pa_simple_free.restype = None
 _pulse_simple.pa_simple_free.argtypes = [ctypes.c_void_p]
+_pulse_simple.pa_simple_write.restype = ctypes.c_int
+_pulse_simple.pa_simple_write.argtypes = [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_int),
+]
+_pulse_simple.pa_simple_drain.restype = ctypes.c_int
+_pulse_simple.pa_simple_drain.argtypes = [
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+]
+_pulse_simple.pa_simple_flush.restype = ctypes.c_int
+_pulse_simple.pa_simple_flush.argtypes = [
+    ctypes.c_void_p, ctypes.POINTER(ctypes.c_int),
+]
 
 
 class PulseRecorder:
@@ -82,6 +95,40 @@ class PulseRecorder:
         if self._pa:
             _pulse_simple.pa_simple_free(self._pa)
             self._pa = None
+
+class PulsePlayer:
+    """Play audio via PulseAudio simple API."""
+
+    def __init__(self, rate, channels=1):
+        self.frame_size = 2 * channels  # 16-bit samples
+        spec = _PaSampleSpec(format=3, rate=rate, channels=channels)
+        err = ctypes.c_int(0)
+        self._pa = _pulse_simple.pa_simple_new(
+            None, b"jarvis", 1, None, b"playback",
+            ctypes.byref(spec), None, None, ctypes.byref(err),
+        )
+        if not self._pa:
+            raise RuntimeError(f"pa_simple_new (playback) failed: error {err.value}")
+
+    def write(self, data):
+        err = ctypes.c_int(0)
+        ret = _pulse_simple.pa_simple_write(self._pa, data, len(data), ctypes.byref(err))
+        if ret < 0:
+            raise RuntimeError(f"pa_simple_write failed: error {err.value}")
+
+    def drain(self):
+        err = ctypes.c_int(0)
+        _pulse_simple.pa_simple_drain(self._pa, ctypes.byref(err))
+
+    def flush(self):
+        err = ctypes.c_int(0)
+        _pulse_simple.pa_simple_flush(self._pa, ctypes.byref(err))
+
+    def close(self):
+        if self._pa:
+            _pulse_simple.pa_simple_free(self._pa)
+            self._pa = None
+
 
 # Silence detection config
 NOISE_MULTIPLIER = 3.0         # speech threshold = ambient_rms * this
@@ -222,25 +269,25 @@ def transcribe(whisper_model, audio_bytes):
         os.unlink(tmp_path)
 
 
-def speak(tts_voice, text):
-    """Speak text aloud using piper TTS."""
+def speak(tts_voice, text, stop_event=None):
+    """Speak text aloud using piper TTS, streaming via PulseAudio.
+
+    If stop_event is provided and gets set, playback is flushed and returns early.
+    """
     if not text:
         return
 
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-        tmp_path = f.name
-        with wave.open(f, "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(tts_voice.config.sample_rate)
-            for chunk in tts_voice.synthesize(text):
-                audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
-                wav_file.writeframes(audio_int16.tobytes())
-
+    player = PulsePlayer(rate=tts_voice.config.sample_rate)
     try:
-        subprocess.run(["aplay", "-q", tmp_path], check=False)
+        for chunk in tts_voice.synthesize(text):
+            if stop_event and stop_event.is_set():
+                player.flush()
+                return
+            audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
+            player.write(audio_int16.tobytes())
+        player.drain()
     finally:
-        os.unlink(tmp_path)
+        player.close()
 
 
 SESSION_ID = str(uuid.uuid4())
@@ -276,7 +323,7 @@ def send_to_claude(text, first_call=[True]):
             cmd,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
             env=env,
         )
         response = result.stdout.strip()
@@ -288,7 +335,7 @@ def send_to_claude(text, first_call=[True]):
         error_logger.error("'claude' command not found")
         return "Error: 'claude' command not found. Is Claude Code installed?"
     except subprocess.TimeoutExpired:
-        error_logger.error("Claude timed out after 120 seconds for prompt: %s", text[:200])
+        error_logger.error("Claude timed out after 300 seconds for prompt: %s", text[:200])
         return "Error: Claude Code timed out."
 
 
@@ -312,94 +359,136 @@ def main():
 
     print("\n=== Jarvis is ready. Say 'Hey Jarvis' to activate. ===\n")
 
+    pending_text = None  # Set when wake word interrupts speech
+
     while True:
-        # Read audio chunk for wake word detection
-        data = stream.read(CHUNK, exception_on_overflow=False)
-        audio_data = np.frombuffer(data, dtype=np.int16)
+        if pending_text:
+            text = pending_text
+            pending_text = None
+        else:
+            # Read audio chunk for wake word detection
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            audio_data = np.frombuffer(data, dtype=np.int16)
 
-        # Continuously track ambient noise (only during non-speech)
-        rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
-        if rms < noise_tracker.speech_threshold:
-            noise_tracker.update(rms)
+            # Continuously track ambient noise (only during non-speech)
+            rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
+            if rms < noise_tracker.speech_threshold:
+                noise_tracker.update(rms)
 
-        # Feed to wake word detector
-        prediction = wake_model.predict(audio_data)
+            # Feed to wake word detector
+            prediction = wake_model.predict(audio_data)
 
-        # Check for wake word activation
-        for model_name, score in prediction.items():
-            if score > 0.7:
-                print(f"\n*** Wake word detected! (threshold: {noise_tracker.speech_threshold:.0f}) ***")
+            # Check for wake word activation
+            activated = False
+            for model_name, score in prediction.items():
+                if score > 0.7:
+                    activated = True
+                    break
+            if not activated:
+                continue
 
-                # Record until silence
-                audio_bytes = record_until_silence(stream, noise_tracker)
+            print(f"\n*** Wake word detected! (threshold: {noise_tracker.speech_threshold:.0f}) ***")
 
-                # Transcribe
-                text = transcribe(whisper_model, audio_bytes)
-                if not text:
-                    print("(no speech detected)")
-                    continue
+            # Record until silence
+            audio_bytes = record_until_silence(stream, noise_tracker)
 
+            # Transcribe
+            text = transcribe(whisper_model, audio_bytes)
+            if not text:
+                print("(no speech detected)")
+                continue
+
+            print(f"Transcribed: {text}")
+            conversation_logger.info("USER: %s", text)
+
+        # Handle built-in commands without calling Claude API
+        text_lower = text.lower().strip().rstrip(".")
+        if text_lower in ("restart", "restart yourself", "restart jarvis",
+                          "please restart", "reboot", "reboot yourself"):
+            print("Built-in command: restart")
+            speak(tts_voice, "Restarting now.")
+            os._exit(42)
+
+        if text_lower in ("revert", "revert yourself", "revert jarvis",
+                          "revert the last change", "undo the last change",
+                          "roll back", "rollback"):
+            print("Built-in command: revert")
+            repo_dir = os.path.dirname(os.path.abspath(__file__))
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, cwd=repo_dir
+            )
+            if result.returncode != 0:
+                speak(tts_voice, "Sorry, I couldn't find the git repository.")
+                wake_model.reset()
+                continue
+            short_hash = result.stdout.strip()[:7]
+            revert = subprocess.run(
+                ["git", "revert", "--no-edit", "HEAD"],
+                capture_output=True, text=True, cwd=repo_dir
+            )
+            if revert.returncode != 0:
+                speak(tts_voice, "Sorry, the revert failed.")
+                print(f"git revert error: {revert.stderr}")
+                wake_model.reset()
+                continue
+            speak(tts_voice, f"Reverted commit {short_hash}. Restarting now.")
+            os._exit(42)
+
+        # Send to Claude, with a spoken filler if it takes too long
+        result_holder = {}
+        done_event = threading.Event()
+
+        def claude_worker():
+            result_holder["response"] = send_to_claude(text)
+            done_event.set()
+
+        threading.Thread(target=claude_worker, daemon=True).start()
+
+        if not done_event.wait(timeout=10.0):
+            speak(tts_voice, random.choice(ACKNOWLEDGEMENTS))
+            while not done_event.wait(timeout=STILL_WORKING_INTERVAL):
+                speak(tts_voice, random.choice(STILL_WORKING))
+
+        response = result_holder["response"]
+        conversation_logger.info("CLAUDE: %s", response)
+        print(f"\nClaude: {response}\n")
+
+        # Speak response in background thread, monitor for wake word interrupt
+        stop_speaking = threading.Event()
+        speak_thread = threading.Thread(
+            target=speak, args=(tts_voice, response, stop_speaking), daemon=True
+        )
+        speak_thread.start()
+
+        interrupted = False
+        while speak_thread.is_alive():
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            audio_data = np.frombuffer(data, dtype=np.int16)
+            prediction = wake_model.predict(audio_data)
+            for model_name, ww_score in prediction.items():
+                if ww_score > 0.7:
+                    print("\n*** Wake word detected during speech — interrupting ***")
+                    stop_speaking.set()
+                    speak_thread.join()
+                    interrupted = True
+                    break
+            if interrupted:
+                break
+
+        speak_thread.join()
+
+        if interrupted:
+            wake_model.reset()
+            audio_bytes = record_until_silence(stream, noise_tracker)
+            text = transcribe(whisper_model, audio_bytes)
+            if text:
                 print(f"Transcribed: {text}")
                 conversation_logger.info("USER: %s", text)
+                pending_text = text
 
-                # Handle built-in commands without calling Claude API
-                text_lower = text.lower().strip().rstrip(".")
-                if text_lower in ("restart", "restart yourself", "restart jarvis",
-                                  "please restart", "reboot", "reboot yourself"):
-                    print("Built-in command: restart")
-                    speak(tts_voice, "Restarting now.")
-                    os._exit(42)
-
-                if text_lower in ("revert", "revert yourself", "revert jarvis",
-                                  "revert the last change", "undo the last change",
-                                  "roll back", "rollback"):
-                    print("Built-in command: revert")
-                    repo_dir = os.path.dirname(os.path.abspath(__file__))
-                    result = subprocess.run(
-                        ["git", "rev-parse", "HEAD"],
-                        capture_output=True, text=True, cwd=repo_dir
-                    )
-                    if result.returncode != 0:
-                        speak(tts_voice, "Sorry, I couldn't find the git repository.")
-                        wake_model.reset()
-                        continue
-                    short_hash = result.stdout.strip()[:7]
-                    revert = subprocess.run(
-                        ["git", "revert", "--no-edit", "HEAD"],
-                        capture_output=True, text=True, cwd=repo_dir
-                    )
-                    if revert.returncode != 0:
-                        speak(tts_voice, "Sorry, the revert failed.")
-                        print(f"git revert error: {revert.stderr}")
-                        wake_model.reset()
-                        continue
-                    speak(tts_voice, f"Reverted commit {short_hash}. Restarting now.")
-                    os._exit(42)
-
-                # Send to Claude, with a spoken filler if it takes too long
-                result_holder = {}
-                done_event = threading.Event()
-
-                def claude_worker():
-                    result_holder["response"] = send_to_claude(text)
-                    done_event.set()
-
-                threading.Thread(target=claude_worker, daemon=True).start()
-
-                if not done_event.wait(timeout=10.0):
-                    speak(tts_voice, random.choice(ACKNOWLEDGEMENTS))
-                    while not done_event.wait(timeout=STILL_WORKING_INTERVAL):
-                        speak(tts_voice, random.choice(STILL_WORKING))
-
-                response = result_holder["response"]
-                conversation_logger.info("CLAUDE: %s", response)
-                print(f"\nClaude: {response}\n")
-
-                # Speak response
-                speak(tts_voice, response)
-
-                # Reset wake word model state
-                wake_model.reset()
+        # Reset wake word model state
+        wake_model.reset()
 
 
 if __name__ == "__main__":
