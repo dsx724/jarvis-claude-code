@@ -381,7 +381,7 @@ def main():
             # Check for wake word activation
             activated = False
             for model_name, score in prediction.items():
-                if score > 0.7:
+                if score > 0.8:
                     activated = True
                     break
             if not activated:
@@ -467,7 +467,7 @@ def main():
             audio_data = np.frombuffer(data, dtype=np.int16)
             prediction = wake_model.predict(audio_data)
             for model_name, ww_score in prediction.items():
-                if ww_score > 0.7:
+                if ww_score > 0.8:
                     print("\n*** Wake word detected during speech — interrupting ***")
                     stop_speaking.set()
                     speak_thread.join()
