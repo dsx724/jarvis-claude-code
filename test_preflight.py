@@ -185,16 +185,20 @@ def check_echo_detection():
     mod = check_module_import._module
     # Clear state
     mod._recently_spoken.clear()
-    # No spoken text — nothing should be an echo
-    assert not mod.is_self_echo("hello world")
-    # Add spoken text and check exact/fuzzy match
-    mod._recently_spoken.append("Let me think about that.")
-    assert mod.is_self_echo("let me think about that")
+    # Canned messages should always be detected as echo
+    assert mod.is_self_echo("Bear with me.")
+    assert mod.is_self_echo("bear with me")
+    assert mod.is_self_echo("Still working on it.")
     assert mod.is_self_echo("Let me think about that.")
-    # Partial match (substring)
-    assert mod.is_self_echo("think about that")
+    assert mod.is_self_echo("Jarvis is ready")
     # Unrelated text should not match
     assert not mod.is_self_echo("turn on the lights")
+    assert not mod.is_self_echo("what is the weather today")
+    # Dynamic spoken text (Claude responses)
+    mod._recently_spoken.append("The answer is forty two.")
+    assert mod.is_self_echo("the answer is forty two")
+    assert mod.is_self_echo("answer is forty two")
+    assert not mod.is_self_echo("what is the meaning of life")
     # Clean up
     mod._recently_spoken.clear()
 

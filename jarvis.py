@@ -256,6 +256,12 @@ def clean_text_for_speech(text):
 _recently_spoken = []
 ECHO_SIMILARITY_THRESHOLD = 0.5
 
+# Pre-normalized set of all canned messages for fast echo lookup
+_CANNED_MESSAGES = (
+    ACKNOWLEDGEMENTS + STILL_WORKING + STARTUP_MESSAGES + SHUTDOWN_MESSAGES
+)
+_canned_normalized = None  # lazily built
+
 
 def _normalize(text):
     """Normalize text for comparison: lowercase, strip punctuation, collapse whitespace."""
@@ -264,22 +270,38 @@ def _normalize(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def _get_canned_normalized():
+    """Return set of normalized canned messages (built once)."""
+    global _canned_normalized
+    if _canned_normalized is None:
+        _canned_normalized = {_normalize(m) for m in _CANNED_MESSAGES}
+    return _canned_normalized
+
+
+def _matches_any(norm_t, candidates):
+    """Check if normalized text matches any candidate via substring or fuzzy match."""
+    for norm_s in candidates:
+        if not norm_s:
+            continue
+        if norm_t in norm_s or norm_s in norm_t:
+            return True
+        ratio = SequenceMatcher(None, norm_t, norm_s).ratio()
+        if ratio >= ECHO_SIMILARITY_THRESHOLD:
+            return True
+    return False
+
+
 def is_self_echo(transcribed):
     """Check if transcribed text is an echo of something Jarvis recently said."""
     norm_t = _normalize(transcribed)
     if not norm_t:
         return False
-    for spoken in _recently_spoken:
-        norm_s = _normalize(spoken)
-        if not norm_s:
-            continue
-        # Check if transcription is a substring of spoken text
-        if norm_t in norm_s:
-            return True
-        # Check fuzzy similarity
-        ratio = SequenceMatcher(None, norm_t, norm_s).ratio()
-        if ratio >= ECHO_SIMILARITY_THRESHOLD:
-            return True
+    # Check against all canned messages (acknowledgements, fillers, etc.)
+    if _matches_any(norm_t, _get_canned_normalized()):
+        return True
+    # Check against recently spoken dynamic text (Claude responses)
+    if _matches_any(norm_t, [_normalize(s) for s in _recently_spoken]):
+        return True
     return False
 
 
