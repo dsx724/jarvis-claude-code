@@ -3,6 +3,8 @@
 
 import ctypes
 from collections import deque
+from datetime import datetime
+import logging
 import os
 import random
 import signal
@@ -198,6 +200,13 @@ def speak(tts_voice, text):
 
 SESSION_ID = str(uuid.uuid4())
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+error_logger = logging.getLogger("jarvis.error")
+error_logger.setLevel(logging.ERROR)
+_error_handler = logging.FileHandler(os.path.join(SCRIPT_DIR, "error.log"))
+_error_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+error_logger.addHandler(_error_handler)
+
 
 def send_to_claude(text, first_call=[True]):
     """Send text to Claude Code and return the response, resuming the session."""
@@ -221,10 +230,13 @@ def send_to_claude(text, first_call=[True]):
         response = result.stdout.strip()
         if result.returncode != 0 and not response:
             response = f"Error: {result.stderr.strip()}"
+            error_logger.error("Claude returned code %d: %s", result.returncode, result.stderr.strip())
         return response
     except FileNotFoundError:
+        error_logger.error("'claude' command not found")
         return "Error: 'claude' command not found. Is Claude Code installed?"
     except subprocess.TimeoutExpired:
+        error_logger.error("Claude timed out after 120 seconds for prompt: %s", text[:200])
         return "Error: Claude Code timed out."
 
 
