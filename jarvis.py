@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Jarvis: Wake-word voice assistant for Claude Code."""
 
+import ctypes
 import os
 import signal
 import subprocess
@@ -9,17 +10,30 @@ import tempfile
 import uuid
 import wave
 
+# Suppress ALSA and JACK warnings
+try:
+    _asound = ctypes.cdll.LoadLibrary("libasound.so.2")
+    _ERROR_HANDLER_TYPE = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int,
+                                           ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
+    _error_handler = _ERROR_HANDLER_TYPE(lambda *_: None)  # prevent GC
+    _asound.snd_lib_error_set_handler(_error_handler)
+except OSError:
+    pass
+
+# Suppress onnxruntime CUDA warning
+import warnings
+warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
+
 import numpy as np
 import pyaudio
 
 # Audio config
 RATE = 16000
 CHANNELS = 1
-CHUNK = 1280  # 80ms at 16kHz — openwakeword expects this
+CHUNK = 1280  # 80ms at 16kHz - openwakeword expects this
 FORMAT = pyaudio.paInt16
 
 # Silence detection config
-NOISE_CALIBRATION_SECONDS = 2  # how long to sample ambient noise
 NOISE_MULTIPLIER = 3.0         # speech threshold = ambient_rms * this
 SILENCE_DURATION = 1.5         # seconds of silence after speech to stop
 MAX_RECORD_SECONDS = 30        # safety cap
@@ -59,27 +73,29 @@ def load_models():
     return wake_model, whisper_model, tts_voice
 
 
-def calibrate_noise(stream):
-    """Measure ambient noise RMS over a few seconds."""
-    print("Calibrating ambient noise...")
-    chunks_per_second = RATE / CHUNK
-    num_chunks = int(NOISE_CALIBRATION_SECONDS * chunks_per_second)
-    rms_values = []
+class NoiseTracker:
+    """Continuously tracks ambient noise using an exponential moving average."""
 
-    for _ in range(num_chunks):
-        data = stream.read(CHUNK, exception_on_overflow=False)
-        audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-        rms_values.append(np.sqrt(np.mean(audio_data ** 2)))
+    def __init__(self, alpha=0.01):
+        self.alpha = alpha
+        self.ambient_rms = None
 
-    ambient_rms = np.mean(rms_values)
-    threshold = max(ambient_rms * NOISE_MULTIPLIER, 200)  # floor of 200
-    print(f"Ambient RMS: {ambient_rms:.0f}, speech threshold: {threshold:.0f}")
-    return threshold
+    def update(self, rms):
+        if self.ambient_rms is None:
+            self.ambient_rms = rms
+        else:
+            self.ambient_rms = self.alpha * rms + (1 - self.alpha) * self.ambient_rms
+
+    @property
+    def speech_threshold(self):
+        if self.ambient_rms is None:
+            return 200
+        return max(self.ambient_rms * NOISE_MULTIPLIER, 200)
 
 
-def record_until_silence(stream, speech_threshold):
+def record_until_silence(stream, noise_tracker):
     """Record audio until speech is followed by silence. Returns raw audio bytes."""
-    print("Listening... (speak now)")
+    print("Listening...")
     frames = []
     silent_chunks = 0
     speech_detected = False
@@ -93,7 +109,7 @@ def record_until_silence(stream, speech_threshold):
         audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32)
         rms = np.sqrt(np.mean(audio_data ** 2))
 
-        if rms >= speech_threshold:
+        if rms >= noise_tracker.speech_threshold:
             speech_detected = True
             silent_chunks = 0
         else:
@@ -192,7 +208,7 @@ def main():
         frames_per_buffer=CHUNK,
     )
 
-    speech_threshold = calibrate_noise(stream)
+    noise_tracker = NoiseTracker()
 
     def shutdown(sig, frame):
         print("\nShutting down...")
@@ -212,16 +228,21 @@ def main():
         data = stream.read(CHUNK, exception_on_overflow=False)
         audio_data = np.frombuffer(data, dtype=np.int16)
 
+        # Continuously track ambient noise (only during non-speech)
+        rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
+        if rms < noise_tracker.speech_threshold:
+            noise_tracker.update(rms)
+
         # Feed to wake word detector
         prediction = wake_model.predict(audio_data)
 
         # Check for wake word activation
         for model_name, score in prediction.items():
             if score > 0.5:
-                print("\n*** Wake word detected! ***")
+                print(f"\n*** Wake word detected! (threshold: {noise_tracker.speech_threshold:.0f}) ***")
 
                 # Record until silence
-                audio_bytes = record_until_silence(stream, speech_threshold)
+                audio_bytes = record_until_silence(stream, noise_tracker)
 
                 # Transcribe
                 text = transcribe(whisper_model, audio_bytes)
@@ -230,6 +251,9 @@ def main():
                     continue
 
                 print(f"Transcribed: {text}")
+
+                # Acknowledge so the user knows we heard them
+                speak(tts_voice, "Let me think about that.")
 
                 # Send to Claude
                 response = send_to_claude(text)
