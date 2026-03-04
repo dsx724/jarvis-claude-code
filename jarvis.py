@@ -143,6 +143,19 @@ class PulsePlayer:
             self._pa = None
 
 
+def reset_wake_model(wake_model):
+    """Fully reset wake word model, including preprocessor feature buffers."""
+    wake_model.reset()
+    # reset() only clears the prediction buffer. The preprocessor still holds
+    # old audio features (raw_data_buffer, melspectrogram_buffer, feature_buffer)
+    # which can cause false re-triggers from the sliding window.
+    pp = wake_model.preprocessor
+    pp.raw_data_buffer.clear()
+    pp.melspectrogram_buffer = np.ones((76, 32))
+    pp.accumulated_samples = 0
+    pp.feature_buffer = pp._get_embeddings(np.zeros(16000 * 10).astype(np.int16))
+
+
 def load_models():
     """Load wake word and whisper models."""
     print("Loading wake word model...")
@@ -468,7 +481,7 @@ def main():
         else:
             interrupted = speak(tts_voice, text)
         stream.flush()
-        wake_model.reset()
+        reset_wake_model(wake_model)
         return interrupted
 
     print("\n=== Jarvis is ready. Say 'Hey Jarvis' to activate. ===\n")
@@ -504,7 +517,7 @@ def main():
         # Reset wake model and flush mic buffer after every recording
         # to prevent stale audio from re-triggering the wake word
         stream.flush()
-        wake_model.reset()
+        reset_wake_model(wake_model)
 
         # Transcribe
         text = transcribe(whisper_model, audio_bytes)

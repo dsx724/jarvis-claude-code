@@ -175,6 +175,7 @@ def check_module_import():
 def check_function_signatures():
     mod = check_module_import._module
     expected = {
+        "reset_wake_model": ["wake_model"],
         "load_models": [],
         "record_until_silence": ["stream", "vad_model"],
         "transcribe": ["whisper_model", "audio_bytes"],
