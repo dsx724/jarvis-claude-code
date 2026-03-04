@@ -5,7 +5,8 @@ Voice assistant that listens for a wake word, records speech, transcribes it, se
 ## Project Structure
 
 - `jarvis.py` — Main application code.
-- `config/config.py` — All tunable constants and spoken message lists.
+- `jarvis.ini` — User-editable configuration file (INI format) with all tunable settings.
+- `config/config.py` — Loads and parses `jarvis.ini`, exposes settings as Python constants.
 - `agents/main/CLAUDE.md` — System prompt for Claude Code sessions.
 - `logs/` — Runtime logs (gitignored): `error.log`, `conversation.log`.
 - `voices/` — Piper TTS voice models (downloaded on first run).
@@ -39,7 +40,9 @@ Uses `small.en` model with int8 quantization on CPU.
 - **Echo filtering**: After transcription, checks if the text matches something Jarvis recently said (via `is_self_echo()`). Uses fuzzy matching (`SequenceMatcher`) and substring checks against the last 3 spoken texts to filter out the mic picking up Jarvis's own TTS output.
 
 ### Text-to-Speech (Piper)
-Uses `en_US-lessac-medium` voice model.
+Configurable voice model via `jarvis.ini` (`[tts]` section). Default: `en_US-lessac-medium`.
+- TTS engine and voice model are selectable in `jarvis.ini` (currently supports `piper`).
+- Voices are auto-downloaded from Hugging Face on first use.
 - Streams synthesized audio chunks to PulsePlayer.
 - Playback is interruptible by wake word detection via `listen_for_wake_word()` running on a background thread.
 - Markdown formatting (asterisks, backticks, headers, bullets) is stripped before synthesis via `clean_text_for_speech()`.
@@ -66,7 +69,7 @@ Handled locally without calling Claude:
 7. Reset wake word model state, loop back.
 
 ## Configuration
-All tunable constants live in `config/config.py`. Key values:
+All tunable settings live in `jarvis.ini` (INI format), loaded by `config/config.py`. Key values:
 
 | Constant | Value | Purpose |
 |---|---|---|
@@ -78,6 +81,8 @@ All tunable constants live in `config/config.py`. Key values:
 | SILENCE_DURATION | 1.0s | Silence window to end recording |
 | MAX_RECORD_SECONDS | 15 | Recording safety cap |
 | CLAUDE_TIMEOUT | 300 | Claude API timeout (seconds) |
+| TTS_ENGINE | piper | Text-to-speech engine |
+| TTS_VOICE | en_US-lessac-medium | Piper voice model name |
 | INITIAL_ACK_DELAY | 10.0 | Seconds before first spoken filler |
 
 ## Dependencies
@@ -93,9 +98,9 @@ All tunable constants live in `config/config.py`. Key values:
 Safety gate between code changes and restart. Runs automatically in `jarvis.sh` after exit code 42, before spawning a new Jarvis process.
 
 ### Checks (ordered fastest-first)
-1. **Syntax validation** — `py_compile` on `jarvis.py`, `config/config.py`, `config/__init__.py`.
+1. **Syntax validation** — `py_compile` on `jarvis.py`, `config/config.py`, `config/__init__.py`. Also validates `jarvis.ini` exists and has all required sections.
 2. **Config import** — Mirrors the exact import statement from `jarvis.py`.
-3. **Config value validation** — Type checks, range checks (e.g., `0 < VAD_THRESHOLD <= 1.0`), non-empty message lists.
+3. **Config value validation** — Type checks, range checks (e.g., `0 < VAD_THRESHOLD <= 1.0`), non-empty message lists, TTS engine/voice validation.
 4. **Module import** — `importlib` loads `jarvis.py` (catches broken imports, missing deps).
 5. **Function signatures** — Verifies `load_models`, `record_until_silence`, `transcribe`, `is_self_echo`, `speak`, `send_to_claude`, `main` exist with expected params.
 6. **Echo detection** — Verifies `is_self_echo()` correctly identifies echoes and passes through unrelated text.
@@ -109,7 +114,7 @@ Exits 0 on pass, 1 on fail. All checks run (no early exit) to give a complete pi
 3. If preflight passes → restart normally.
 4. If preflight fails → `git revert --no-edit HEAD`.
    - If revert succeeds, re-run preflight and restart.
-   - If revert fails, fallback: `git checkout HEAD~1 -- jarvis.py config/config.py`.
+   - If revert fails, fallback: `git checkout HEAD~1 -- jarvis.py config/config.py jarvis.ini`.
 
 ## Process Management
 Runs as a systemd service. Exit code 42 triggers restart (used by built-in restart/revert commands and SIGUSR1). SIGINT triggers graceful shutdown with spoken goodbye.

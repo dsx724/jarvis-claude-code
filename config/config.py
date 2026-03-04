@@ -1,63 +1,47 @@
+"""Load Jarvis configuration from jarvis.ini."""
+
+import configparser
+import os
+
+_ini_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "jarvis.ini")
+_cfg = configparser.ConfigParser()
+if not _cfg.read(_ini_path):
+    raise FileNotFoundError(f"Config file not found: {_ini_path}")
+
 # Audio config
-RATE = 16000
-CHANNELS = 1
-CHUNK = 1280  # 80ms at 16kHz - openwakeword expects this
+RATE = _cfg.getint("audio", "rate")
+CHANNELS = _cfg.getint("audio", "channels")
+CHUNK = _cfg.getint("audio", "chunk")
 
 # Silence detection config (Silero VAD)
-VAD_THRESHOLD = 0.7            # speech probability threshold
-VAD_CHUNK = 512                # Silero requires 512 samples at 16kHz
-SILENCE_DURATION = 1.0         # seconds of silence after speech to stop
-SILENCE_RATIO = 0.8            # fraction of silence window that must be quiet
-MAX_RECORD_SECONDS = 15        # safety cap
+VAD_THRESHOLD = _cfg.getfloat("vad", "threshold")
+VAD_CHUNK = _cfg.getint("vad", "chunk")
+SILENCE_DURATION = _cfg.getfloat("vad", "silence_duration")
+SILENCE_RATIO = _cfg.getfloat("vad", "silence_ratio")
+MAX_RECORD_SECONDS = _cfg.getint("vad", "max_record_seconds")
 
 # Wake word detection
-WAKE_WORD_THRESHOLD = 0.9
+WAKE_WORD_THRESHOLD = _cfg.getfloat("wake_word", "threshold")
 
 # Claude API
-CLAUDE_TIMEOUT = 300           # seconds before timing out Claude calls
+CLAUDE_TIMEOUT = _cfg.getint("claude", "timeout")
 
-# Spoken acknowledgements while waiting for Claude API response
-ACKNOWLEDGEMENTS = [
-    "Let me think about that.",
-    "One moment.",
-    "Working on it.",
-    "Give me a second.",
-    "On it.",
-    "Let me look into that.",
-    "Hmm, let me see.",
-    "Just a moment.",
-]
+# TTS config
+TTS_ENGINE = _cfg.get("tts", "engine")
+TTS_VOICE = _cfg.get("tts", "voice")
 
-# Secondary acknowledgements for long-running requests (spoken every few seconds)
-STILL_WORKING = [
-    "Still working on it.",
-    "Almost there.",
-    "Still thinking.",
-    "Hang on, still going.",
-    "Bear with me.",
-    "Still on it.",
-]
+# Timing
+INITIAL_ACK_DELAY = _cfg.getfloat("timing", "initial_ack_delay")
+STILL_WORKING_INTERVAL = _cfg.getint("timing", "still_working_interval")
 
-STILL_WORKING_INTERVAL = 5  # seconds between secondary acknowledgements
 
-# Startup and shutdown messages
-STARTUP_MESSAGES = [
-    "Jarvis is ready.",
-    "At your service.",
-    "Online and listening.",
-    "Ready when you are.",
-    "All systems go.",
-    "Standing by.",
-]
+def _parse_message_list(value):
+    """Parse a comma-separated message list from the ini file."""
+    return [m.strip() for m in value.split(",") if m.strip()]
 
-SHUTDOWN_MESSAGES = [
-    "Shutting down. Goodbye.",
-    "Going offline. See you later.",
-    "Powering down. Take care.",
-    "Signing off.",
-    "Going to sleep. Goodbye.",
-    "Until next time.",
-]
 
-# Initial acknowledgement delay (seconds before first filler is spoken)
-INITIAL_ACK_DELAY = 10.0
+# Spoken message lists
+ACKNOWLEDGEMENTS = _parse_message_list(_cfg.get("messages", "acknowledgements"))
+STILL_WORKING = _parse_message_list(_cfg.get("messages", "still_working"))
+STARTUP_MESSAGES = _parse_message_list(_cfg.get("messages", "startup"))
+SHUTDOWN_MESSAGES = _parse_message_list(_cfg.get("messages", "shutdown"))

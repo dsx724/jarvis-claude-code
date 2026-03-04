@@ -37,6 +37,17 @@ def check_syntax():
     for f in files:
         path = os.path.join(SCRIPT_DIR, f)
         py_compile.compile(path, doraise=True)
+    # Check that jarvis.ini exists and is parseable
+    import configparser
+    ini_path = os.path.join(SCRIPT_DIR, "jarvis.ini")
+    if not os.path.exists(ini_path):
+        raise FileNotFoundError(f"jarvis.ini not found at {ini_path}")
+    cfg = configparser.ConfigParser()
+    cfg.read(ini_path)
+    required_sections = ["audio", "vad", "wake_word", "claude", "tts", "timing", "messages"]
+    missing = [s for s in required_sections if s not in cfg]
+    if missing:
+        raise ValueError(f"jarvis.ini missing sections: {missing}")
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +61,7 @@ def check_config_import():
         WAKE_WORD_THRESHOLD, CLAUDE_TIMEOUT, INITIAL_ACK_DELAY,
         ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
         STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
+        TTS_ENGINE, TTS_VOICE,
     )
 
 
@@ -64,6 +76,7 @@ def check_config_values():
         WAKE_WORD_THRESHOLD, CLAUDE_TIMEOUT, INITIAL_ACK_DELAY,
         ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
         STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
+        TTS_ENGINE, TTS_VOICE,
     )
     errors = []
 
@@ -84,6 +97,23 @@ def check_config_values():
     ]:
         if not isinstance(val, expected):
             errors.append(f"{name} should be {expected}, got {type(val)}")
+
+    # String checks
+    for name, val in [
+        ("TTS_ENGINE", TTS_ENGINE),
+        ("TTS_VOICE", TTS_VOICE),
+    ]:
+        if not isinstance(val, str) or not val.strip():
+            errors.append(f"{name} must be a non-empty string")
+
+    # TTS engine validation
+    supported_engines = ("piper",)
+    if TTS_ENGINE not in supported_engines:
+        errors.append(f"TTS_ENGINE={TTS_ENGINE} not in {supported_engines}")
+
+    # TTS voice format validation (expect lang-dataset-quality)
+    if TTS_ENGINE == "piper" and TTS_VOICE.count("-") < 2:
+        errors.append(f"TTS_VOICE={TTS_VOICE} should be format lang-dataset-quality (e.g. en_US-lessac-medium)")
 
     # Range checks
     if not (0 < VAD_THRESHOLD <= 1.0):

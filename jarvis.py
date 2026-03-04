@@ -30,6 +30,7 @@ from config import (
     WAKE_WORD_THRESHOLD, CLAUDE_TIMEOUT, INITIAL_ACK_DELAY,
     ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
     STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
+    TTS_ENGINE, TTS_VOICE,
 )
 
 # PulseAudio simple API via ctypes
@@ -158,20 +159,28 @@ def load_models():
     from silero_vad import load_silero_vad
     vad_model = load_silero_vad(onnx=True)
 
-    print("Loading TTS model...")
+    print(f"Loading TTS model ({TTS_ENGINE}: {TTS_VOICE})...")
+    if TTS_ENGINE != "piper":
+        raise ValueError(f"Unsupported TTS engine: {TTS_ENGINE}")
     from piper import PiperVoice
     # Download voice if needed
     voice_dir = os.path.join(os.path.dirname(__file__), "voices")
-    voice_path = os.path.join(voice_dir, "en_US-lessac-medium.onnx")
+    voice_path = os.path.join(voice_dir, f"{TTS_VOICE}.onnx")
     voice_config = voice_path + ".json"
 
     if not os.path.exists(voice_path):
         os.makedirs(voice_dir, exist_ok=True)
-        print("Downloading TTS voice...")
+        print(f"Downloading TTS voice ({TTS_VOICE})...")
         import urllib.request
-        base = "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium"
-        urllib.request.urlretrieve(f"{base}/en_US-lessac-medium.onnx", voice_path)
-        urllib.request.urlretrieve(f"{base}/en_US-lessac-medium.onnx.json", voice_config)
+        # Parse voice name: en_US-lessac-medium -> en/en_US/lessac/medium
+        parts = TTS_VOICE.split("-")
+        lang = parts[0]                    # en_US
+        lang_family = lang.split("_")[0]   # en
+        dataset = parts[1]                 # lessac
+        quality = parts[2]                 # medium
+        base = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang_family}/{lang}/{dataset}/{quality}"
+        urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx", voice_path)
+        urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx.json", voice_config)
 
     tts_voice = PiperVoice.load(voice_path)
 

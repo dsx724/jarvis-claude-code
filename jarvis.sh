@@ -29,8 +29,8 @@ while true; do
                     fi
                 else
                     echo "git revert failed, falling back to checkout..."
-                    git -C "$SCRIPT_DIR" checkout HEAD~1 -- jarvis.py config/config.py
-                    echo "Restored jarvis.py and config/config.py from HEAD~1."
+                    git -C "$SCRIPT_DIR" checkout HEAD~1 -- jarvis.py config/config.py jarvis.ini
+                    echo "Restored jarvis.py, config/config.py, and jarvis.ini from HEAD~1."
                 fi
             fi
         else
