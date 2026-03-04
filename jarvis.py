@@ -551,6 +551,7 @@ def main():
         try:
             reason = open(revert_marker).read().strip()
             os.remove(revert_marker)
+            error_logger.error("Auto-reverted commit after preflight failure: %s", reason)
             speak_and_clear(f"Heads up: the last change was automatically reverted because it failed preflight checks. It was: {reason}")
         except OSError:
             pass
