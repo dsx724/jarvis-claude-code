@@ -130,11 +130,12 @@ class PulsePlayer:
             self._pa = None
 
 
-# Silence detection config
-NOISE_MULTIPLIER = 3.0         # speech threshold = ambient_rms * this
-SILENCE_DURATION = 1.5         # seconds of silence after speech to stop
+# Silence detection config (Silero VAD)
+VAD_THRESHOLD = 0.5            # speech probability threshold
+VAD_CHUNK = 512                # Silero requires 512 samples at 16kHz
+SILENCE_DURATION = 1.0         # seconds of silence after speech to stop
 SILENCE_RATIO = 0.8            # fraction of silence window that must be quiet
-MAX_RECORD_SECONDS = 30        # safety cap
+MAX_RECORD_SECONDS = 15        # safety cap
 
 # Spoken acknowledgements while waiting for Claude API response
 ACKNOWLEDGEMENTS = [
@@ -174,6 +175,10 @@ def load_models():
     from faster_whisper import WhisperModel
     whisper_model = WhisperModel("small.en", device="cpu", compute_type="int8")
 
+    print("Loading Silero VAD model...")
+    from silero_vad import load_silero_vad
+    vad_model = load_silero_vad(onnx=True)
+
     print("Loading TTS model...")
     from piper import PiperVoice
     # Download voice if needed
@@ -192,48 +197,32 @@ def load_models():
     tts_voice = PiperVoice.load(voice_path)
 
     print("All models loaded.")
-    return wake_model, whisper_model, tts_voice
+    return wake_model, whisper_model, tts_voice, vad_model
 
 
-class NoiseTracker:
-    """Continuously tracks ambient noise using an exponential moving average."""
+def record_until_silence(stream, vad_model):
+    """Record audio until speech is followed by silence using Silero VAD. Returns raw audio bytes."""
+    import torch
 
-    def __init__(self, alpha=0.01):
-        self.alpha = alpha
-        self.ambient_rms = None
-
-    def update(self, rms):
-        if self.ambient_rms is None:
-            self.ambient_rms = rms
-        else:
-            self.ambient_rms = self.alpha * rms + (1 - self.alpha) * self.ambient_rms
-
-    @property
-    def speech_threshold(self):
-        if self.ambient_rms is None:
-            return 200
-        return max(self.ambient_rms * NOISE_MULTIPLIER, 200)
-
-
-def record_until_silence(stream, noise_tracker):
-    """Record audio until speech is followed by silence. Returns raw audio bytes."""
     print("Listening...")
+    vad_model.reset_states()
     frames = []
     speech_detected = False
-    chunks_per_second = RATE / CHUNK
+    chunks_per_second = RATE / VAD_CHUNK
     silence_window_size = int(SILENCE_DURATION * chunks_per_second)
 
     # Rolling window: track whether each recent chunk was silent
     window = deque(maxlen=silence_window_size)
 
     for _ in range(int(MAX_RECORD_SECONDS * chunks_per_second)):
-        data = stream.read(CHUNK, exception_on_overflow=False)
+        data = stream.read(VAD_CHUNK, exception_on_overflow=False)
         frames.append(data)
 
-        audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-        rms = np.sqrt(np.mean(audio_data ** 2))
+        audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+        chunk_tensor = torch.from_numpy(audio_data)
+        speech_prob = vad_model(chunk_tensor, RATE).item()
 
-        is_silent = rms < noise_tracker.speech_threshold
+        is_silent = speech_prob < VAD_THRESHOLD
 
         if not is_silent:
             speech_detected = True
@@ -340,14 +329,13 @@ def send_to_claude(text, first_call=[True]):
 
 
 def main():
-    wake_model, whisper_model, tts_voice = load_models()
+    wake_model, whisper_model, tts_voice, vad_model = load_models()
 
     stream = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
 
-    noise_tracker = NoiseTracker()
-
     def shutdown(sig, frame):
         print("\nShutting down...")
+        speak(tts_voice, "Shutting down. Goodbye.")
         os._exit(0)
 
     def restart(sig, frame):
@@ -358,6 +346,7 @@ def main():
     signal.signal(signal.SIGUSR1, restart)
 
     print("\n=== Jarvis is ready. Say 'Hey Jarvis' to activate. ===\n")
+    speak(tts_voice, "Jarvis is ready.")
 
     pending_text = None  # Set when wake word interrupts speech
 
@@ -369,11 +358,6 @@ def main():
             # Read audio chunk for wake word detection
             data = stream.read(CHUNK, exception_on_overflow=False)
             audio_data = np.frombuffer(data, dtype=np.int16)
-
-            # Continuously track ambient noise (only during non-speech)
-            rms = np.sqrt(np.mean(audio_data.astype(np.float32) ** 2))
-            if rms < noise_tracker.speech_threshold:
-                noise_tracker.update(rms)
 
             # Feed to wake word detector
             prediction = wake_model.predict(audio_data)
@@ -387,10 +371,10 @@ def main():
             if not activated:
                 continue
 
-            print(f"\n*** Wake word detected! (threshold: {noise_tracker.speech_threshold:.0f}) ***")
+            print("\n*** Wake word detected! ***")
 
             # Record until silence
-            audio_bytes = record_until_silence(stream, noise_tracker)
+            audio_bytes = record_until_silence(stream, vad_model)
 
             # Transcribe
             text = transcribe(whisper_model, audio_bytes)
@@ -480,7 +464,7 @@ def main():
 
         if interrupted:
             wake_model.reset()
-            audio_bytes = record_until_silence(stream, noise_tracker)
+            audio_bytes = record_until_silence(stream, vad_model)
             text = transcribe(whisper_model, audio_bytes)
             if text:
                 print(f"Transcribed: {text}")
