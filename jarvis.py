@@ -95,6 +95,11 @@ class PulseRecorder:
             raise RuntimeError(f"pa_simple_read failed: error {err.value}")
         return buf.raw
 
+    def flush(self):
+        """Read and discard buffered audio to clear stale data."""
+        err = ctypes.c_int(0)
+        _pulse_simple.pa_simple_flush(self._pa, ctypes.byref(err))
+
     def close(self):
         if self._pa:
             _pulse_simple.pa_simple_free(self._pa)
@@ -311,8 +316,14 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGUSR1, restart)
 
+    def speak_and_clear(text):
+        """Speak text, then flush mic buffer and reset wake model to prevent self-triggering."""
+        speak(tts_voice, text)
+        stream.flush()
+        wake_model.reset()
+
     print("\n=== Jarvis is ready. Say 'Hey Jarvis' to activate. ===\n")
-    speak(tts_voice, random.choice(STARTUP_MESSAGES))
+    speak_and_clear(random.choice(STARTUP_MESSAGES))
 
     while True:
         # Read audio chunk for wake word detection
@@ -363,8 +374,7 @@ def main():
                 capture_output=True, text=True, cwd=repo_dir
             )
             if result.returncode != 0:
-                speak(tts_voice, "Sorry, I couldn't find the git repository.")
-                wake_model.reset()
+                speak_and_clear("Sorry, I couldn't find the git repository.")
                 continue
             short_hash = result.stdout.strip()[:7]
             revert = subprocess.run(
@@ -372,9 +382,8 @@ def main():
                 capture_output=True, text=True, cwd=repo_dir
             )
             if revert.returncode != 0:
-                speak(tts_voice, "Sorry, the revert failed.")
+                speak_and_clear("Sorry, the revert failed.")
                 print(f"git revert error: {revert.stderr}")
-                wake_model.reset()
                 continue
             speak(tts_voice, f"Reverted commit {short_hash}. Restarting now.")
             os._exit(42)
@@ -390,20 +399,16 @@ def main():
         threading.Thread(target=claude_worker, daemon=True).start()
 
         if not done_event.wait(timeout=INITIAL_ACK_DELAY):
-            speak(tts_voice, random.choice(ACKNOWLEDGEMENTS))
+            speak_and_clear(random.choice(ACKNOWLEDGEMENTS))
             while not done_event.wait(timeout=STILL_WORKING_INTERVAL):
-                speak(tts_voice, random.choice(STILL_WORKING))
+                speak_and_clear(random.choice(STILL_WORKING))
 
         response = result_holder["response"]
         conversation_logger.info("CLAUDE: %s", response)
         print(f"\nClaude: {response}\n")
 
-        # Speak response (blocking — mic is not monitored to avoid
-        # self-triggering from TTS audio picked up by the microphone)
-        speak(tts_voice, response)
-
-        # Reset wake word model state
-        wake_model.reset()
+        # Speak response, then flush mic and reset wake model
+        speak_and_clear(response)
 
 
 if __name__ == "__main__":
