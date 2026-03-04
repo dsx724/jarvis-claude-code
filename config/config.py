@@ -11,7 +11,7 @@ SILENCE_RATIO = 0.8            # fraction of silence window that must be quiet
 MAX_RECORD_SECONDS = 15        # safety cap
 
 # Wake word detection
-WAKE_WORD_THRESHOLD = 0.8
+WAKE_WORD_THRESHOLD = 0.9
 
 # Claude API
 CLAUDE_TIMEOUT = 300           # seconds before timing out Claude calls

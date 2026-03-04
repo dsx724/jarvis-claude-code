@@ -70,7 +70,7 @@ All tunable constants live in `config/config.py`. Key values:
 | CHUNK | 1280 | Wake word detection chunk size (80ms) |
 | VAD_CHUNK | 512 | Silero VAD chunk size (32ms) |
 | VAD_THRESHOLD | 0.5 | Speech probability threshold |
-| WAKE_WORD_THRESHOLD | 0.8 | Wake word activation threshold |
+| WAKE_WORD_THRESHOLD | 0.9 | Wake word activation threshold |
 | SILENCE_DURATION | 1.0s | Silence window to end recording |
 | MAX_RECORD_SECONDS | 15 | Recording safety cap |
 | CLAUDE_TIMEOUT | 300 | Claude API timeout (seconds) |
