@@ -386,7 +386,7 @@ def main():
 
                 threading.Thread(target=claude_worker, daemon=True).start()
 
-                if not done_event.wait(timeout=1.0):
+                if not done_event.wait(timeout=10.0):
                     speak(tts_voice, random.choice(ACKNOWLEDGEMENTS))
                     while not done_event.wait(timeout=STILL_WORKING_INTERVAL):
                         speak(tts_voice, random.choice(STILL_WORKING))
