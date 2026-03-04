@@ -1,6 +1,9 @@
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR/agents/main"
+
+# Ensure all dependencies are installed before starting
+"$SCRIPT_DIR/setup.sh"
 source "$SCRIPT_DIR/venv/bin/activate"
 
 trap 'kill -9 $PID 2>/dev/null; exit 0' INT TERM
