@@ -314,9 +314,19 @@ def clean_text_for_speech(text):
 _recently_spoken = []
 ECHO_SIMILARITY_THRESHOLD = 0.5
 
+# Built-in command responses (not from config, but need echo filtering)
+BUILTIN_RESPONSES = [
+    "Restarting now.",
+    "Restarting now",
+    "Reverted commit. Restarting now.",
+    "Sorry, I couldn't find the git repository.",
+    "Sorry, the revert failed.",
+]
+
 # Pre-normalized set of all canned messages for fast echo lookup
 _CANNED_MESSAGES = (
     ACKNOWLEDGEMENTS + STILL_WORKING + STARTUP_MESSAGES + SHUTDOWN_MESSAGES
+    + BUILTIN_RESPONSES
 )
 _canned_normalized = None  # lazily built
 

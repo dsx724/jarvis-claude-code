@@ -218,6 +218,10 @@ def check_echo_detection():
     assert mod.is_self_echo("Still working on it.")
     assert mod.is_self_echo("Let me think about that.")
     assert mod.is_self_echo("Jarvis is ready")
+    # Built-in command responses should be detected as echo
+    assert mod.is_self_echo("Restarting now.")
+    assert mod.is_self_echo("restarting now")
+    assert mod.is_self_echo("Sorry, the revert failed.")
     # Unrelated text should not match
     assert not mod.is_self_echo("turn on the lights")
     assert not mod.is_self_echo("what is the weather today")
