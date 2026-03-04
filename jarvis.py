@@ -4,9 +4,11 @@
 import ctypes
 from collections import deque
 from datetime import datetime
+from difflib import SequenceMatcher
 import logging
 import os
 import random
+import re
 import signal
 import subprocess
 import sys
@@ -250,6 +252,37 @@ def clean_text_for_speech(text):
     return text.strip()
 
 
+# Track recently spoken text for echo detection
+_recently_spoken = []
+ECHO_SIMILARITY_THRESHOLD = 0.5
+
+
+def _normalize(text):
+    """Normalize text for comparison: lowercase, strip punctuation, collapse whitespace."""
+    text = text.lower()
+    text = re.sub(r'[^\w\s]', '', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def is_self_echo(transcribed):
+    """Check if transcribed text is an echo of something Jarvis recently said."""
+    norm_t = _normalize(transcribed)
+    if not norm_t:
+        return False
+    for spoken in _recently_spoken:
+        norm_s = _normalize(spoken)
+        if not norm_s:
+            continue
+        # Check if transcription is a substring of spoken text
+        if norm_t in norm_s:
+            return True
+        # Check fuzzy similarity
+        ratio = SequenceMatcher(None, norm_t, norm_s).ratio()
+        if ratio >= ECHO_SIMILARITY_THRESHOLD:
+            return True
+    return False
+
+
 def speak(tts_voice, text, interrupt_event=None):
     """Speak text aloud using piper TTS, streaming via PulseAudio.
 
@@ -370,6 +403,11 @@ def main():
         If interruptible=True, listens for the wake word during playback and
         stops early if detected. Returns True if interrupted, False otherwise.
         """
+        # Track spoken text for echo detection (keep last 3)
+        if text:
+            _recently_spoken.append(text)
+            if len(_recently_spoken) > 3:
+                _recently_spoken.pop(0)
         if interruptible:
             interrupt_event = threading.Event()
             listener_thread = threading.Thread(
@@ -421,6 +459,11 @@ def main():
         text = transcribe(whisper_model, audio_bytes)
         if not text:
             print("(no speech detected)")
+            continue
+
+        # Filter out self-echo (mic picking up Jarvis's own speech)
+        if is_self_echo(text):
+            print(f"(filtered self-echo: {text})")
             continue
 
         print(f"Transcribed: {text}")

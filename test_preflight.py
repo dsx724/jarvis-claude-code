@@ -138,6 +138,7 @@ def check_function_signatures():
         "record_until_silence": ["stream", "vad_model"],
         "transcribe": ["whisper_model", "audio_bytes"],
         "clean_text_for_speech": ["text"],
+        "is_self_echo": ["transcribed"],
         "speak": ["tts_voice", "text"],
         "listen_for_wake_word": ["wake_model", "interrupt_event"],
         "send_to_claude": ["text"],
@@ -178,7 +179,28 @@ def check_text_cleaning():
 
 
 # ---------------------------------------------------------------------------
-# 7. Model loading
+# 7. Echo detection
+# ---------------------------------------------------------------------------
+def check_echo_detection():
+    mod = check_module_import._module
+    # Clear state
+    mod._recently_spoken.clear()
+    # No spoken text — nothing should be an echo
+    assert not mod.is_self_echo("hello world")
+    # Add spoken text and check exact/fuzzy match
+    mod._recently_spoken.append("Let me think about that.")
+    assert mod.is_self_echo("let me think about that")
+    assert mod.is_self_echo("Let me think about that.")
+    # Partial match (substring)
+    assert mod.is_self_echo("think about that")
+    # Unrelated text should not match
+    assert not mod.is_self_echo("turn on the lights")
+    # Clean up
+    mod._recently_spoken.clear()
+
+
+# ---------------------------------------------------------------------------
+# 8. Model loading
 # ---------------------------------------------------------------------------
 def check_model_loading():
     mod = check_module_import._module
@@ -204,6 +226,7 @@ if __name__ == "__main__":
     check("Module import", check_module_import)
     check("Function signatures", check_function_signatures)
     check("Text cleaning for TTS", check_text_cleaning)
+    check("Echo detection", check_echo_detection)
     check("Model loading", check_model_loading)
 
     print(f"\nResults: {passed} passed, {failed} failed")

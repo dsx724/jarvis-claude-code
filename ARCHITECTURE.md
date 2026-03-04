@@ -36,6 +36,7 @@ ML-based speech/silence detection using `silero-vad` (ONNX mode).
 ### Speech-to-Text (faster-whisper)
 Uses `small.en` model with int8 quantization on CPU.
 - Writes audio to a temp WAV file, transcribes, deletes.
+- **Echo filtering**: After transcription, checks if the text matches something Jarvis recently said (via `is_self_echo()`). Uses fuzzy matching (`SequenceMatcher`) and substring checks against the last 3 spoken texts to filter out the mic picking up Jarvis's own TTS output.
 
 ### Text-to-Speech (Piper)
 Uses `en_US-lessac-medium` voice model.
@@ -58,7 +59,8 @@ Handled locally without calling Claude:
 1. Read audio chunk → feed to wake word model.
 2. On activation → `record_until_silence()` with Silero VAD.
 3. Transcribe with faster-whisper.
-4. Check for built-in commands.
+4. Filter self-echo (discard if transcription matches recently spoken text).
+5. Check for built-in commands.
 5. Send to Claude Code (with timeout-based spoken fillers).
 6. Speak response (blocking).
 7. Reset wake word model state, loop back.
@@ -95,8 +97,9 @@ Safety gate between code changes and restart. Runs automatically in `jarvis.sh` 
 2. **Config import** — Mirrors the exact import statement from `jarvis.py`.
 3. **Config value validation** — Type checks, range checks (e.g., `0 < VAD_THRESHOLD <= 1.0`), non-empty message lists.
 4. **Module import** — `importlib` loads `jarvis.py` (catches broken imports, missing deps).
-5. **Function signatures** — Verifies `load_models`, `record_until_silence`, `transcribe`, `speak`, `send_to_claude`, `main` exist with expected params.
-6. **Model loading** — Loads all 4 models (wake word, whisper, VAD, TTS).
+5. **Function signatures** — Verifies `load_models`, `record_until_silence`, `transcribe`, `is_self_echo`, `speak`, `send_to_claude`, `main` exist with expected params.
+6. **Echo detection** — Verifies `is_self_echo()` correctly identifies echoes and passes through unrelated text.
+7. **Model loading** — Loads all 4 models (wake word, whisper, VAD, TTS).
 
 Exits 0 on pass, 1 on fail. All checks run (no early exit) to give a complete picture.
 
