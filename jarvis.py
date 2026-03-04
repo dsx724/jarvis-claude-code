@@ -2,6 +2,7 @@
 """Jarvis: Wake-word voice assistant for Claude Code."""
 
 import ctypes
+from collections import deque
 import os
 import random
 import signal
@@ -38,6 +39,7 @@ FORMAT = pyaudio.paInt16
 # Silence detection config
 NOISE_MULTIPLIER = 3.0         # speech threshold = ambient_rms * this
 SILENCE_DURATION = 1.5         # seconds of silence after speech to stop
+SILENCE_RATIO = 0.8            # fraction of silence window that must be quiet
 MAX_RECORD_SECONDS = 30        # safety cap
 
 # Spoken acknowledgements while waiting for Claude API response
@@ -123,10 +125,12 @@ def record_until_silence(stream, noise_tracker):
     """Record audio until speech is followed by silence. Returns raw audio bytes."""
     print("Listening...")
     frames = []
-    silent_chunks = 0
     speech_detected = False
     chunks_per_second = RATE / CHUNK
-    silence_chunks_needed = int(SILENCE_DURATION * chunks_per_second)
+    silence_window_size = int(SILENCE_DURATION * chunks_per_second)
+
+    # Rolling window: track whether each recent chunk was silent
+    window = deque(maxlen=silence_window_size)
 
     for _ in range(int(MAX_RECORD_SECONDS * chunks_per_second)):
         data = stream.read(CHUNK, exception_on_overflow=False)
@@ -135,16 +139,18 @@ def record_until_silence(stream, noise_tracker):
         audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32)
         rms = np.sqrt(np.mean(audio_data ** 2))
 
-        if rms >= noise_tracker.speech_threshold:
-            speech_detected = True
-            silent_chunks = 0
-        else:
-            if speech_detected:
-                silent_chunks += 1
+        is_silent = rms < noise_tracker.speech_threshold
 
-        # Only stop after speech was detected and then silence followed
-        if speech_detected and silent_chunks >= silence_chunks_needed:
-            break
+        if not is_silent:
+            speech_detected = True
+
+        if speech_detected:
+            window.append(is_silent)
+
+        # Stop when the rolling window is full and mostly silent
+        if speech_detected and len(window) == silence_window_size:
+            if sum(window) / silence_window_size >= SILENCE_RATIO:
+                break
 
     print("Done recording.")
     return b"".join(frames)
