@@ -123,7 +123,7 @@ def load_models():
                      "resources", "models", "hey_jarvis_v0.1.onnx")
     ])
 
-    print("Loading whisper model (base.en)...")
+    print("Loading whisper model (small.en)...")
     from faster_whisper import WhisperModel
     whisper_model = WhisperModel("small.en", device="cpu", compute_type="int8")
 
