@@ -137,6 +137,7 @@ def check_function_signatures():
         "load_models": [],
         "record_until_silence": ["stream", "vad_model"],
         "transcribe": ["whisper_model", "audio_bytes"],
+        "clean_text_for_speech": ["text"],
         "speak": ["tts_voice", "text"],
         "send_to_claude": ["text"],
         "main": [],
@@ -159,7 +160,24 @@ def check_function_signatures():
 
 
 # ---------------------------------------------------------------------------
-# 6. Model loading
+# 6. Text cleaning for TTS
+# ---------------------------------------------------------------------------
+def check_text_cleaning():
+    mod = check_module_import._module
+    fn = mod.clean_text_for_speech
+    # Asterisks (bold/italic) should be stripped
+    assert fn("**bold**") == "bold", f"got {fn('**bold**')}"
+    assert fn("*italic*") == "italic", f"got {fn('*italic*')}"
+    # Backticks should be stripped
+    assert fn("`code`") == "code", f"got {fn('`code`')}"
+    # Headers should be stripped
+    assert fn("## Header") == "Header", f"got {fn('## Header')}"
+    # Plain text should pass through
+    assert fn("hello world") == "hello world"
+
+
+# ---------------------------------------------------------------------------
+# 7. Model loading
 # ---------------------------------------------------------------------------
 def check_model_loading():
     mod = check_module_import._module
@@ -184,6 +202,7 @@ if __name__ == "__main__":
     check("Config value validation", check_config_values)
     check("Module import", check_module_import)
     check("Function signatures", check_function_signatures)
+    check("Text cleaning for TTS", check_text_cleaning)
     check("Model loading", check_model_loading)
 
     print(f"\nResults: {passed} passed, {failed} failed")

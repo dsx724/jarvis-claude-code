@@ -235,11 +235,27 @@ def transcribe(whisper_model, audio_bytes):
         os.unlink(tmp_path)
 
 
+def clean_text_for_speech(text):
+    """Strip markdown formatting that TTS would speak literally."""
+    import re
+    # Remove bold/italic markers (**, *, __, _)
+    text = re.sub(r'\*{1,3}', '', text)
+    text = re.sub(r'_{1,3}', '', text)
+    # Remove markdown headers (# ## ###)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Remove inline code backticks
+    text = re.sub(r'`{1,3}', '', text)
+    # Remove bullet point markers
+    text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
+    return text.strip()
+
+
 def speak(tts_voice, text):
     """Speak text aloud using piper TTS, streaming via PulseAudio."""
     if not text:
         return
 
+    text = clean_text_for_speech(text)
     player = PulsePlayer(rate=tts_voice.config.sample_rate)
     try:
         for chunk in tts_voice.synthesize(text):
