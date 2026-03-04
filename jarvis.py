@@ -277,24 +277,35 @@ def speak(tts_voice, text, interrupt_event=None):
     return interrupted
 
 
+WAKE_INTERRUPT_CONSECUTIVE = 3  # consecutive detections required during playback
+
 def listen_for_wake_word(wake_model, interrupt_event):
     """Monitor mic for wake word in a background thread, setting interrupt_event when detected.
 
     Opens its own PulseAudio recording stream so it can listen independently
-    of the main stream. Runs until interrupt_event is set (either by this
-    function detecting the wake word, or externally to signal shutdown).
+    of the main stream. Requires WAKE_INTERRUPT_CONSECUTIVE consecutive
+    detections above threshold to trigger, filtering out false positives
+    from speaker bleed (Jarvis hearing its own voice).
     """
     listener = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
+    consecutive = 0
     try:
         while not interrupt_event.is_set():
             data = listener.read(CHUNK, exception_on_overflow=False)
             audio_data = np.frombuffer(data, dtype=np.int16)
             prediction = wake_model.predict(audio_data)
+            detected = False
             for model_name, score in prediction.items():
                 if score > WAKE_WORD_THRESHOLD:
+                    detected = True
+                    break
+            if detected:
+                consecutive += 1
+                if consecutive >= WAKE_INTERRUPT_CONSECUTIVE:
                     print("\n*** Wake word detected (interrupting speech) ***")
                     interrupt_event.set()
-                    break
+            else:
+                consecutive = 0
     finally:
         listener.close()
 
