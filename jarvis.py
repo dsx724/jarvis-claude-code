@@ -23,16 +23,39 @@ warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
 
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from config import (
-    RATE, CHANNELS, CHUNK,
-    VAD_THRESHOLD, VAD_CHUNK, SILENCE_DURATION, SILENCE_RATIO, MAX_RECORD_SECONDS,
-    WAKE_WORD_THRESHOLD, CLAUDE_TIMEOUT, INITIAL_ACK_DELAY,
-    PRE_SPEECH_TIMEOUT,
-    ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
-    STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
-    TTS_ENGINE, TTS_VOICE, STT_MODEL,
-)
+# ---------------------------------------------------------------------------
+# Load configuration from config/jarvis.ini
+# ---------------------------------------------------------------------------
+import configparser
+
+_ini_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "jarvis.ini")
+_cfg = configparser.ConfigParser()
+if not _cfg.read(_ini_path):
+    raise FileNotFoundError(f"Config file not found: {_ini_path}")
+
+def _parse_message_list(value):
+    return [m.strip() for m in value.split(",") if m.strip()]
+
+RATE = _cfg.getint("audio", "rate")
+CHANNELS = _cfg.getint("audio", "channels")
+CHUNK = _cfg.getint("audio", "chunk")
+VAD_THRESHOLD = _cfg.getfloat("vad", "threshold")
+VAD_CHUNK = _cfg.getint("vad", "chunk")
+SILENCE_DURATION = _cfg.getfloat("vad", "silence_duration")
+PRE_SPEECH_TIMEOUT = _cfg.getfloat("vad", "pre_speech_timeout")
+SILENCE_RATIO = _cfg.getfloat("vad", "silence_ratio")
+MAX_RECORD_SECONDS = _cfg.getint("vad", "max_record_seconds")
+WAKE_WORD_THRESHOLD = _cfg.getfloat("wake_word", "threshold")
+STT_MODEL = _cfg.get("stt", "model")
+CLAUDE_TIMEOUT = _cfg.getint("claude", "timeout")
+TTS_ENGINE = _cfg.get("tts", "engine")
+TTS_VOICE = _cfg.get("tts", "voice")
+INITIAL_ACK_DELAY = _cfg.getfloat("timing", "initial_ack_delay")
+STILL_WORKING_INTERVAL = _cfg.getint("timing", "still_working_interval")
+ACKNOWLEDGEMENTS = _parse_message_list(_cfg.get("messages", "acknowledgements"))
+STILL_WORKING = _parse_message_list(_cfg.get("messages", "still_working"))
+STARTUP_MESSAGES = _parse_message_list(_cfg.get("messages", "startup"))
+SHUTDOWN_MESSAGES = _parse_message_list(_cfg.get("messages", "shutdown"))
 
 # PulseAudio simple API via ctypes
 _pulse_simple = ctypes.cdll.LoadLibrary("libpulse-simple.so.0")

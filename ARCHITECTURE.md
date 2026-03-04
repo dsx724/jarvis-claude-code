@@ -4,9 +4,8 @@ Voice assistant that listens for a wake word, records speech, transcribes it, se
 
 ## Project Structure
 
-- `jarvis.py` — Main application code.
-- `jarvis.ini` — User-editable configuration file (INI format) with all tunable settings.
-- `config/config.py` — Loads and parses `jarvis.ini`, exposes settings as Python constants.
+- `jarvis.py` — Main application code (loads config directly from `config/jarvis.ini`).
+- `config/jarvis.ini` — User-editable configuration file (INI format) with all tunable settings.
 - `agents/main/CLAUDE.md` — System prompt for Claude Code sessions.
 - `logs/` — Runtime logs (gitignored): `error.log`, `conversation.log`.
 - `voices/` — Piper TTS voice models (downloaded on first run).
@@ -69,7 +68,7 @@ Handled locally without calling Claude:
 7. Reset wake word model state, loop back.
 
 ## Configuration
-All tunable settings live in `jarvis.ini` (INI format), loaded by `config/config.py`. Key values:
+All tunable settings live in `config/jarvis.ini` (INI format), loaded directly by `jarvis.py` at startup. Key values:
 
 | Constant | Value | Purpose |
 |---|---|---|
@@ -99,7 +98,7 @@ All tunable settings live in `jarvis.ini` (INI format), loaded by `config/config
 Safety gate between code changes and restart. Runs automatically in `jarvis.sh` after exit code 42, before spawning a new Jarvis process.
 
 ### Checks (ordered fastest-first)
-1. **Syntax validation** — `py_compile` on `jarvis.py`, `config/config.py`, `config/__init__.py`. Also validates `jarvis.ini` exists and has all required sections.
+1. **Syntax validation** — `py_compile` on `jarvis.py`. Also validates `config/jarvis.ini` exists and has all required sections.
 2. **Config import** — Mirrors the exact import statement from `jarvis.py`.
 3. **Config value validation** — Type checks, range checks (e.g., `0 < VAD_THRESHOLD <= 1.0`), non-empty message lists, TTS engine/voice validation.
 4. **Module import** — `importlib` loads `jarvis.py` (catches broken imports, missing deps).
@@ -115,7 +114,7 @@ Exits 0 on pass, 1 on fail. All checks run (no early exit) to give a complete pi
 3. If preflight passes → restart normally.
 4. If preflight fails → `git revert --no-edit HEAD`.
    - If revert succeeds, re-run preflight and restart.
-   - If revert fails, fallback: `git checkout HEAD~1 -- jarvis.py config/config.py jarvis.ini`.
+   - If revert fails, fallback: `git checkout HEAD~1 -- jarvis.py config/jarvis.ini`.
 
 ## Process Management
 Runs as a systemd service. Exit code 42 triggers restart (used by built-in restart/revert commands and SIGUSR1). SIGINT triggers graceful shutdown with spoken goodbye.
