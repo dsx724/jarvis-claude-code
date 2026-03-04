@@ -292,6 +292,32 @@ def main():
                     speak(tts_voice, "Restarting now.")
                     os._exit(42)
 
+                if text_lower in ("revert", "revert yourself", "revert jarvis",
+                                  "revert the last change", "undo the last change",
+                                  "roll back", "rollback"):
+                    print("Built-in command: revert")
+                    repo_dir = os.path.dirname(os.path.abspath(__file__))
+                    result = subprocess.run(
+                        ["git", "rev-parse", "HEAD"],
+                        capture_output=True, text=True, cwd=repo_dir
+                    )
+                    if result.returncode != 0:
+                        speak(tts_voice, "Sorry, I couldn't find the git repository.")
+                        wake_model.reset()
+                        continue
+                    short_hash = result.stdout.strip()[:7]
+                    revert = subprocess.run(
+                        ["git", "revert", "--no-edit", "HEAD"],
+                        capture_output=True, text=True, cwd=repo_dir
+                    )
+                    if revert.returncode != 0:
+                        speak(tts_voice, "Sorry, the revert failed.")
+                        print(f"git revert error: {revert.stderr}")
+                        wake_model.reset()
+                        continue
+                    speak(tts_voice, f"Reverted commit {short_hash}. Restarting now.")
+                    os._exit(42)
+
                 # Send to Claude, with a spoken filler if it takes too long
                 result_holder = {}
                 done_event = threading.Event()
