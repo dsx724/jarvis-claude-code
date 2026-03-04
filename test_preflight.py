@@ -41,7 +41,7 @@ def check_syntax():
         raise FileNotFoundError(f"jarvis.ini not found at {ini_path}")
     cfg = configparser.ConfigParser()
     cfg.read(ini_path)
-    required_sections = ["audio", "vad", "wake_word", "stt", "claude", "tts", "timing", "messages"]
+    required_sections = ["debug", "audio", "vad", "wake_word", "stt", "claude", "tts", "timing", "messages"]
     missing = [s for s in required_sections if s not in cfg]
     if missing:
         raise ValueError(f"jarvis.ini missing sections: {missing}")
@@ -53,6 +53,7 @@ def check_syntax():
 def check_config_import():
     mod = check_module_import._module
     expected = [
+        "DEBUG",
         "RATE", "CHANNELS", "CHUNK",
         "VAD_THRESHOLD", "VAD_CHUNK", "SILENCE_DURATION", "SILENCE_RATIO", "MAX_RECORD_SECONDS",
         "WAKE_WORD_THRESHOLD", "CLAUDE_TIMEOUT", "INITIAL_ACK_DELAY",
@@ -75,6 +76,7 @@ def check_config_values():
 
     # Type checks
     for name, expected in [
+        ("DEBUG", bool),
         ("RATE", int),
         ("CHANNELS", int),
         ("CHUNK", int),

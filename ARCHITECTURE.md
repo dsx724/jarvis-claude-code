@@ -74,6 +74,7 @@ All tunable settings live in `config/jarvis.ini` (INI format), loaded directly b
 
 | Constant | Value | Purpose |
 |---|---|---|
+| DEBUG | false | Enable verbose timestamped debug logging |
 | RATE | 16000 | Audio sample rate (Hz) |
 | CHUNK | 1280 | Wake word detection chunk size (80ms) |
 | VAD_CHUNK | 512 | Silero VAD chunk size (32ms) |
@@ -87,6 +88,17 @@ All tunable settings live in `config/jarvis.ini` (INI format), loaded directly b
 | TTS_ENGINE | piper | Text-to-speech engine |
 | TTS_VOICE | en_US-lessac-medium | Piper voice model name |
 | INITIAL_ACK_DELAY | 10.0 | Seconds before first spoken filler |
+
+### Debug / Profiling Mode
+Enabled via `[debug] enabled = true` in `jarvis.ini`. When active, prints timestamped `[DEBUG +<elapsed>s]` messages to stdout covering:
+- Per-model load times (wake word, whisper, VAD, TTS)
+- Recording duration, speech onset/offset, VAD decisions
+- Transcription breakdown (WAV write, whisper call, segment iteration)
+- Claude subprocess startup, first event, tool_use events, total time
+- TTS synthesis-to-first-audio latency and total playback time
+- Full iteration timing (wake word to end of speech)
+
+Zero overhead when disabled (all debug paths are gated by `if DEBUG`).
 
 ## Dependencies
 - **openwakeword**: Wake word detection (ONNX)
