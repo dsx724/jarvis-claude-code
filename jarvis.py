@@ -201,11 +201,19 @@ def speak(tts_voice, text):
 SESSION_ID = str(uuid.uuid4())
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+AGENTS_MAIN_DIR = os.path.join(SCRIPT_DIR, "agents", "main")
+
 error_logger = logging.getLogger("jarvis.error")
 error_logger.setLevel(logging.ERROR)
 _error_handler = logging.FileHandler(os.path.join(SCRIPT_DIR, "error.log"))
 _error_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 error_logger.addHandler(_error_handler)
+
+conversation_logger = logging.getLogger("jarvis.conversation")
+conversation_logger.setLevel(logging.INFO)
+_conv_handler = logging.FileHandler(os.path.join(AGENTS_MAIN_DIR, "conversation.log"))
+_conv_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+conversation_logger.addHandler(_conv_handler)
 
 
 def send_to_claude(text, first_call=[True]):
@@ -295,6 +303,7 @@ def main():
                     continue
 
                 print(f"Transcribed: {text}")
+                conversation_logger.info("USER: %s", text)
 
                 # Handle built-in commands without calling Claude API
                 text_lower = text.lower().strip().rstrip(".")
@@ -346,6 +355,7 @@ def main():
                         speak(tts_voice, random.choice(STILL_WORKING))
 
                 response = result_holder["response"]
+                conversation_logger.info("CLAUDE: %s", response)
                 print(f"\nClaude: {response}\n")
 
                 # Speak response
