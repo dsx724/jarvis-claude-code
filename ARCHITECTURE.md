@@ -74,7 +74,12 @@ All tunable settings live in `config/jarvis.ini` (INI format), loaded directly b
 
 | Constant | Value | Purpose |
 |---|---|---|
-| DEBUG | false | Enable verbose timestamped debug logging |
+| DEBUG_MODELS | false | Debug model loading times |
+| DEBUG_RECORDING | false | Debug recording, VAD, and iteration timing |
+| DEBUG_TRANSCRIPTION | false | Debug whisper transcription breakdown |
+| DEBUG_CLAUDE | false | Debug Claude subprocess lifecycle |
+| DEBUG_TTS | false | Debug TTS synthesis and playback |
+| DEBUG_ECHO | false | Debug echo filter decisions |
 | RATE | 16000 | Audio sample rate (Hz) |
 | CHUNK | 1280 | Wake word detection chunk size (80ms) |
 | VAD_CHUNK | 512 | Silero VAD chunk size (32ms) |
@@ -90,15 +95,15 @@ All tunable settings live in `config/jarvis.ini` (INI format), loaded directly b
 | INITIAL_ACK_DELAY | 10.0 | Seconds before first spoken filler |
 
 ### Debug / Profiling Mode
-Enabled via `[debug] enabled = true` in `jarvis.ini`. When active, prints timestamped `[DEBUG +<elapsed>s]` messages to stdout covering:
-- Per-model load times (wake word, whisper, VAD, TTS)
-- Recording duration, speech onset/offset, VAD decisions
-- Transcription breakdown (WAV write, whisper call, segment iteration)
-- Claude subprocess startup, first event, tool_use events, total time
-- TTS synthesis-to-first-audio latency and total playback time
-- Full iteration timing (wake word to end of speech)
+Per-component debug flags in `[debug]` section of `jarvis.ini`. Each can be independently set to `true` to print timestamped `[DEBUG +<elapsed>s]` messages for that component:
+- **models** — Per-model load times (wake word, whisper, VAD, TTS)
+- **recording** — Recording duration, speech onset/offset, VAD decisions, full iteration timing
+- **transcription** — WAV write, whisper inference, segment iteration breakdown
+- **claude** — Subprocess startup, first event, tool_use events, total response time
+- **tts** — TTS synthesis-to-first-audio latency and total playback time
+- **echo** — Echo filter match decisions
 
-Zero overhead when disabled (all debug paths are gated by `if DEBUG`).
+Zero overhead when disabled (all debug paths are gated by per-component flags).
 
 ## Dependencies
 - **openwakeword**: Wake word detection (ONNX)

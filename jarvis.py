@@ -40,30 +40,35 @@ if not _cfg.read(_ini_path):
 def _parse_message_list(value):
     return [m.strip() for m in value.split(",") if m.strip()]
 
-DEBUG = _cfg.getboolean("debug", "enabled", fallback=False)
+DEBUG_MODELS = _cfg.getboolean("debug", "models", fallback=False)
+DEBUG_RECORDING = _cfg.getboolean("debug", "recording", fallback=False)
+DEBUG_TRANSCRIPTION = _cfg.getboolean("debug", "transcription", fallback=False)
+DEBUG_CLAUDE = _cfg.getboolean("debug", "claude", fallback=False)
+DEBUG_TTS = _cfg.getboolean("debug", "tts", fallback=False)
+DEBUG_ECHO = _cfg.getboolean("debug", "echo", fallback=False)
 
 # ---------------------------------------------------------------------------
 # Debug / profiling helpers
 # ---------------------------------------------------------------------------
 _t0 = time.perf_counter()
 
-def debug_log(msg):
-    """Print a timestamped debug message when DEBUG is enabled."""
-    if DEBUG:
+def debug_log(flag, msg):
+    """Print a timestamped debug message when the given flag is enabled."""
+    if flag:
         elapsed = time.perf_counter() - _t0
         print(f"[DEBUG +{elapsed:8.3f}s] {msg}")
 
 @contextmanager
-def debug_timer(label):
-    """Context manager that logs elapsed time for a block when DEBUG is enabled."""
-    if DEBUG:
+def debug_timer(flag, label):
+    """Context manager that logs elapsed time for a block when flag is enabled."""
+    if flag:
         start = time.perf_counter()
-        debug_log(f"{label} — started")
+        debug_log(flag, f"{label} — started")
         try:
             yield
         finally:
             dt = time.perf_counter() - start
-            debug_log(f"{label} — finished in {dt:.3f}s")
+            debug_log(flag, f"{label} — finished in {dt:.3f}s")
     else:
         yield
 
@@ -219,9 +224,9 @@ def reset_wake_model(wake_model):
 
 def load_models():
     """Load wake word and whisper models."""
-    with debug_timer("load_models total"):
+    with debug_timer(DEBUG_MODELS, "load_models total"):
         print("Loading wake word model...")
-        with debug_timer("load wake word model"):
+        with debug_timer(DEBUG_MODELS, "load wake word model"):
             from openwakeword.model import Model as WakeModel
             wake_model = WakeModel(wakeword_model_paths=[
                 os.path.join(os.path.dirname(__import__('openwakeword').__file__),
@@ -229,17 +234,17 @@ def load_models():
             ])
 
         print(f"Loading whisper model ({STT_MODEL})...")
-        with debug_timer("load whisper model"):
+        with debug_timer(DEBUG_MODELS, "load whisper model"):
             from faster_whisper import WhisperModel
             whisper_model = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
 
         print("Loading Silero VAD model...")
-        with debug_timer("load Silero VAD model"):
+        with debug_timer(DEBUG_MODELS, "load Silero VAD model"):
             from silero_vad import load_silero_vad
             vad_model = load_silero_vad(onnx=True)
 
         print(f"Loading TTS model ({TTS_ENGINE}: {TTS_VOICE})...")
-        with debug_timer("load TTS model"):
+        with debug_timer(DEBUG_MODELS, "load TTS model"):
             if TTS_ENGINE != "piper":
                 raise ValueError(f"Unsupported TTS engine: {TTS_ENGINE}")
             from piper import PiperVoice
@@ -277,12 +282,12 @@ def record_until_silence(stream, vad_model, pre_roll=None):
     import torch
 
     print("Listening...")
-    debug_log("record_until_silence — started")
+    debug_log(DEBUG_RECORDING, "record_until_silence — started")
     rec_start = time.perf_counter()
     vad_model.reset_states()
     frames = list(pre_roll) if pre_roll else []
     if pre_roll:
-        debug_log(f"  pre-roll: {len(list(pre_roll))} chunks")
+        debug_log(DEBUG_RECORDING, f"  pre-roll: {len(list(pre_roll))} chunks")
     speech_detected = False
     chunks_per_second = RATE / VAD_CHUNK
     silence_window_size = int(SILENCE_DURATION * chunks_per_second)
@@ -303,12 +308,12 @@ def record_until_silence(stream, vad_model, pre_roll=None):
 
         if not is_silent and not speech_detected:
             speech_detected = True
-            debug_log(f"  speech onset at chunk {chunk_idx} ({chunk_idx / chunks_per_second:.2f}s)")
+            debug_log(DEBUG_RECORDING, f"  speech onset at chunk {chunk_idx} ({chunk_idx / chunks_per_second:.2f}s)")
 
         # Give up if no speech detected within the pre-speech timeout
         if not speech_detected and chunk_idx >= pre_speech_chunks:
             print("No speech detected, giving up.")
-            debug_log(f"  no speech after {PRE_SPEECH_TIMEOUT}s, giving up")
+            debug_log(DEBUG_RECORDING, f"  no speech after {PRE_SPEECH_TIMEOUT}s, giving up")
             return b""
 
         if speech_detected:
@@ -317,20 +322,20 @@ def record_until_silence(stream, vad_model, pre_roll=None):
         # Stop when the rolling window is full and mostly silent
         if speech_detected and len(window) == silence_window_size:
             if sum(window) / silence_window_size >= SILENCE_RATIO:
-                debug_log(f"  silence detected at chunk {chunk_idx} ({chunk_idx / chunks_per_second:.2f}s)")
+                debug_log(DEBUG_RECORDING, f"  silence detected at chunk {chunk_idx} ({chunk_idx / chunks_per_second:.2f}s)")
                 break
 
     rec_dt = time.perf_counter() - rec_start
     n_frames = len(frames)
     audio_duration = n_frames * VAD_CHUNK / RATE
-    debug_log(f"record_until_silence — finished in {rec_dt:.3f}s (captured {audio_duration:.2f}s of audio, {n_frames} chunks)")
+    debug_log(DEBUG_RECORDING, f"record_until_silence — finished in {rec_dt:.3f}s (captured {audio_duration:.2f}s of audio, {n_frames} chunks)")
     print("Done recording.")
     return b"".join(frames)
 
 
 def transcribe(whisper_model, audio_bytes):
     """Transcribe raw audio bytes with faster-whisper."""
-    debug_log("transcribe — started")
+    debug_log(DEBUG_TRANSCRIPTION, "transcribe — started")
     t_start = time.perf_counter()
 
     # Write to temporary WAV file
@@ -342,18 +347,18 @@ def transcribe(whisper_model, audio_bytes):
             wf.setframerate(RATE)
             wf.writeframes(audio_bytes)
     t_wav = time.perf_counter()
-    debug_log(f"  WAV write: {t_wav - t_start:.3f}s ({len(audio_bytes)} bytes)")
+    debug_log(DEBUG_TRANSCRIPTION, f"  WAV write: {t_wav - t_start:.3f}s ({len(audio_bytes)} bytes)")
 
     try:
         segments, info = whisper_model.transcribe(
             tmp_path, beam_size=1, without_timestamps=True, vad_filter=True
         )
         t_transcribe_start = time.perf_counter()
-        debug_log(f"  whisper.transcribe() call: {t_transcribe_start - t_wav:.3f}s")
+        debug_log(DEBUG_TRANSCRIPTION, f"  whisper.transcribe() call: {t_transcribe_start - t_wav:.3f}s")
         text = " ".join(seg.text.strip() for seg in segments).strip()
         t_segments = time.perf_counter()
-        debug_log(f"  segment iteration: {t_segments - t_transcribe_start:.3f}s")
-        debug_log(f"transcribe — finished in {t_segments - t_start:.3f}s, result: '{text[:80]}'")
+        debug_log(DEBUG_TRANSCRIPTION, f"  segment iteration: {t_segments - t_transcribe_start:.3f}s")
+        debug_log(DEBUG_TRANSCRIPTION, f"transcribe — finished in {t_segments - t_start:.3f}s, result: '{text[:80]}'")
         return text
     finally:
         os.unlink(tmp_path)
@@ -461,7 +466,7 @@ def speak(tts_voice, text, interrupt_event=None):
     if not text:
         return False
 
-    debug_log(f"speak — started ({len(text)} chars): '{text[:60]}'")
+    debug_log(DEBUG_TTS, f"speak — started ({len(text)} chars): '{text[:60]}'")
     t_speak_start = time.perf_counter()
     text = clean_text_for_speech(text)
     player = PulsePlayer(rate=tts_voice.config.sample_rate)
@@ -475,7 +480,7 @@ def speak(tts_voice, text, interrupt_event=None):
             for chunk in tts_voice.synthesize(text):
                 if t_first_audio is None:
                     t_first_audio = time.perf_counter()
-                    debug_log(f"  TTS synthesis to first audio: {t_first_audio - t_speak_start:.3f}s")
+                    debug_log(DEBUG_TTS, f"  TTS synthesis to first audio: {t_first_audio - t_speak_start:.3f}s")
                 audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
                 audio_bytes = audio_int16.tobytes()
                 bytes_per_sub = sub_chunk_samples * 2  # 16-bit = 2 bytes per sample
@@ -491,7 +496,7 @@ def speak(tts_voice, text, interrupt_event=None):
         finally:
             player.close()
     t_speak_end = time.perf_counter()
-    debug_log(f"speak — finished in {t_speak_end - t_speak_start:.3f}s (interrupted={interrupted})")
+    debug_log(DEBUG_TTS, f"speak — finished in {t_speak_end - t_speak_start:.3f}s (interrupted={interrupted})")
     return interrupted
 
 
@@ -559,7 +564,7 @@ def send_to_claude(text, status_queue=None, first_call=[True]):
     as Claude emits tool_use events (stream-json mode).
     """
     print(f"\n> {text}\n")
-    debug_log(f"send_to_claude — started, prompt: '{text[:80]}'")
+    debug_log(DEBUG_CLAUDE, f"send_to_claude — started, prompt: '{text[:80]}'")
     t_claude_start = time.perf_counter()
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
@@ -577,7 +582,7 @@ def send_to_claude(text, status_queue=None, first_call=[True]):
             text=True, env=env,
         )
         t_proc_start = time.perf_counter()
-        debug_log(f"  subprocess started in {t_proc_start - t_claude_start:.3f}s")
+        debug_log(DEBUG_CLAUDE, f"  subprocess started in {t_proc_start - t_claude_start:.3f}s")
 
         # Timeout watchdog
         timer = threading.Timer(CLAUDE_TIMEOUT, proc.kill)
@@ -599,7 +604,7 @@ def send_to_claude(text, status_queue=None, first_call=[True]):
                 event_count += 1
                 if t_first_event is None:
                     t_first_event = time.perf_counter()
-                    debug_log(f"  first event in {t_first_event - t_proc_start:.3f}s (type={event.get('type')})")
+                    debug_log(DEBUG_CLAUDE, f"  first event in {t_first_event - t_proc_start:.3f}s (type={event.get('type')})")
 
                 # Extract tool_use events for live status
                 if status_queue and event.get("type") == "assistant":
@@ -607,7 +612,7 @@ def send_to_claude(text, status_queue=None, first_call=[True]):
                         if block.get("type") == "tool_use":
                             status = _tool_status(block.get("name", ""), block.get("input", {}))
                             if status:
-                                debug_log(f"  tool_use: {block.get('name', '')}")
+                                debug_log(DEBUG_CLAUDE, f"  tool_use: {block.get('name', '')}")
                                 status_queue.put(status)
 
                 # Extract the final result
@@ -618,7 +623,7 @@ def send_to_claude(text, status_queue=None, first_call=[True]):
         finally:
             timer.cancel()
         t_claude_end = time.perf_counter()
-        debug_log(f"send_to_claude — finished in {t_claude_end - t_claude_start:.3f}s ({event_count} events, response: {len(response) if response else 0} chars)")
+        debug_log(DEBUG_CLAUDE, f"send_to_claude — finished in {t_claude_end - t_claude_start:.3f}s ({event_count} events, response: {len(response) if response else 0} chars)")
 
         if response is not None:
             if proc.returncode != 0 and not response:
@@ -732,7 +737,7 @@ def main():
                 continue
 
             _iter_count += 1
-            debug_log(f"=== iteration {_iter_count} START (wake word detected) ===")
+            debug_log(DEBUG_RECORDING, f"=== iteration {_iter_count} START (wake word detected) ===")
             _iter_start = time.perf_counter()
             print("\n*** Wake word detected! ***")
             # Keep only the last 2 chunks (~160ms) — recent enough to capture
@@ -743,7 +748,7 @@ def main():
         else:
             _iter_count += 1
             _iter_start = time.perf_counter()
-            debug_log(f"=== iteration {_iter_count} START (speech interrupt) ===")
+            debug_log(DEBUG_RECORDING, f"=== iteration {_iter_count} START (speech interrupt) ===")
             print("\n*** Speech interrupted — listening for command ***")
             skip_wake_word = False
 
@@ -757,7 +762,7 @@ def main():
         reset_wake_model(wake_model)
 
         # Transcribe
-        with debug_timer("transcribe (end-to-end)"):
+        with debug_timer(DEBUG_TRANSCRIPTION, "transcribe (end-to-end)"):
             text = transcribe(whisper_model, audio_bytes)
         if not text:
             print("(no speech detected)")
@@ -804,7 +809,7 @@ def main():
         # If the same echo is repeated multiple times, it's likely intentional.
         global _last_echo_text, _echo_repeat_count
         if is_self_echo(text):
-            debug_log(f"echo filter: matched as self-echo: '{text[:60]}'")
+            debug_log(DEBUG_ECHO, f"echo filter: matched as self-echo: '{text[:60]}'")
             norm = _normalize(text)
             if norm == _last_echo_text:
                 _echo_repeat_count += 1
@@ -855,9 +860,9 @@ def main():
         print(f"\nClaude: {response}\n")
 
         # Speak response (interruptible by wake word)
-        with debug_timer("speak response"):
+        with debug_timer(DEBUG_TTS, "speak response"):
             interrupted = speak_and_clear(response, interruptible=True)
-        debug_log(f"=== iteration {_iter_count} END — total {time.perf_counter() - _iter_start:.3f}s ===")
+        debug_log(DEBUG_RECORDING, f"=== iteration {_iter_count} END — total {time.perf_counter() - _iter_start:.3f}s ===")
         if interrupted:
             skip_wake_word = True
 

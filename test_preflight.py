@@ -53,7 +53,8 @@ def check_syntax():
 def check_config_import():
     mod = check_module_import._module
     expected = [
-        "DEBUG",
+        "DEBUG_MODELS", "DEBUG_RECORDING", "DEBUG_TRANSCRIPTION",
+        "DEBUG_CLAUDE", "DEBUG_TTS", "DEBUG_ECHO",
         "RATE", "CHANNELS", "CHUNK",
         "VAD_THRESHOLD", "VAD_CHUNK", "SILENCE_DURATION", "SILENCE_RATIO", "MAX_RECORD_SECONDS",
         "WAKE_WORD_THRESHOLD", "CLAUDE_TIMEOUT", "INITIAL_ACK_DELAY",
@@ -76,7 +77,12 @@ def check_config_values():
 
     # Type checks
     for name, expected in [
-        ("DEBUG", bool),
+        ("DEBUG_MODELS", bool),
+        ("DEBUG_RECORDING", bool),
+        ("DEBUG_TRANSCRIPTION", bool),
+        ("DEBUG_CLAUDE", bool),
+        ("DEBUG_TTS", bool),
+        ("DEBUG_ECHO", bool),
         ("RATE", int),
         ("CHANNELS", int),
         ("CHUNK", int),
