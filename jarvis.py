@@ -5,8 +5,10 @@ import ctypes
 from collections import deque
 from datetime import datetime
 from difflib import SequenceMatcher
+import json
 import logging
 import os
+from queue import Queue, Empty
 import random
 import re
 import signal
@@ -466,36 +468,102 @@ _conv_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 conversation_logger.addHandler(_conv_handler)
 
 
-def send_to_claude(text, first_call=[True]):
-    """Send text to Claude Code and return the response, resuming the session."""
+def _tool_status(tool_name, tool_input):
+    """Convert a Claude tool_use event into a short speakable status string."""
+    if tool_name == "Read":
+        fname = os.path.basename(tool_input.get("file_path", "")) if isinstance(tool_input, dict) else ""
+        return f"Reading {fname}." if fname else "Reading a file."
+    if tool_name in ("Edit", "Write"):
+        fname = os.path.basename(tool_input.get("file_path", "")) if isinstance(tool_input, dict) else ""
+        return f"Editing {fname}." if fname else "Editing a file."
+    if tool_name == "Bash":
+        return "Running a command."
+    if tool_name in ("Glob", "Grep"):
+        return "Searching the codebase."
+    if tool_name == "Agent":
+        return "Delegating a subtask."
+    if tool_name in ("WebFetch", "WebSearch"):
+        return "Searching the web."
+    return None
+
+
+def send_to_claude(text, status_queue=None, first_call=[True]):
+    """Send text to Claude Code and return the response, resuming the session.
+
+    If status_queue is provided, pushes short speakable tool-status strings
+    as Claude emits tool_use events (stream-json mode).
+    """
     print(f"\n> {text}\n")
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
-        cmd = ["claude", "-p", "--dangerously-skip-permissions"]
+        cmd = ["claude", "-p", "--dangerously-skip-permissions",
+               "--verbose", "--output-format", "stream-json"]
         if first_call[0]:
             cmd += ["--session-id", SESSION_ID]
             first_call[0] = False
         else:
             cmd += ["--resume", SESSION_ID]
         cmd.append(text)
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=CLAUDE_TIMEOUT,
-            env=env,
+
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=env,
         )
-        response = result.stdout.strip()
-        if result.returncode != 0 and not response:
-            response = f"Error: {result.stderr.strip()}"
-            error_logger.error("Claude returned code %d: %s", result.returncode, result.stderr.strip())
-        return response
+
+        # Timeout watchdog
+        timer = threading.Timer(CLAUDE_TIMEOUT, proc.kill)
+        timer.start()
+
+        response = None
+        try:
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                # Extract tool_use events for live status
+                if status_queue and event.get("type") == "assistant":
+                    for block in event.get("message", {}).get("content", []):
+                        if block.get("type") == "tool_use":
+                            status = _tool_status(block.get("name", ""), block.get("input", {}))
+                            if status:
+                                status_queue.put(status)
+
+                # Extract the final result
+                if event.get("type") == "result":
+                    response = event.get("result", "").strip()
+
+            proc.wait()
+        finally:
+            timer.cancel()
+
+        if response is not None:
+            if proc.returncode != 0 and not response:
+                stderr = proc.stderr.read().strip()
+                response = f"Error: {stderr}"
+                error_logger.error("Claude returned code %d: %s", proc.returncode, stderr)
+            return response
+
+        # Fallback: no result event parsed
+        stderr = proc.stderr.read().strip()
+        if proc.returncode != 0:
+            error_logger.error("Claude returned code %d: %s", proc.returncode, stderr)
+            return f"Error: {stderr}" if stderr else "Error: Claude returned no response."
+        return "Error: Claude returned no response."
+
     except FileNotFoundError:
         error_logger.error("'claude' command not found")
         return "Error: 'claude' command not found. Is Claude Code installed?"
-    except subprocess.TimeoutExpired:
-        error_logger.error("Claude timed out after %d seconds for prompt: %s", CLAUDE_TIMEOUT, text[:200])
-        return "Error: Claude Code timed out."
+    except Exception as e:
+        if "timed out" in str(e).lower() or (proc and proc.returncode and proc.returncode < 0):
+            error_logger.error("Claude timed out after %d seconds for prompt: %s", CLAUDE_TIMEOUT, text[:200])
+            return "Error: Claude Code timed out."
+        error_logger.error("Claude error: %s", e)
+        return f"Error: {e}"
 
 
 def main():
@@ -671,9 +739,10 @@ def main():
         # Send to Claude, with a spoken filler if it takes too long
         result_holder = {}
         done_event = threading.Event()
+        tool_queue = Queue()
 
         def claude_worker():
-            result_holder["response"] = send_to_claude(text)
+            result_holder["response"] = send_to_claude(text, status_queue=tool_queue)
             done_event.set()
 
         threading.Thread(target=claude_worker, daemon=True).start()
@@ -681,7 +750,17 @@ def main():
         if not done_event.wait(timeout=INITIAL_ACK_DELAY):
             speak_and_clear(random.choice(ACKNOWLEDGEMENTS))
             while not done_event.wait(timeout=STILL_WORKING_INTERVAL):
-                speak_and_clear(random.choice(STILL_WORKING))
+                # Drain queue, keep only the latest tool status
+                latest_status = None
+                try:
+                    while True:
+                        latest_status = tool_queue.get_nowait()
+                except Empty:
+                    pass
+                if latest_status:
+                    speak_and_clear(latest_status)
+                else:
+                    speak_and_clear(random.choice(STILL_WORKING))
 
         response = result_holder["response"]
         conversation_logger.info("CLAUDE: %s", response)

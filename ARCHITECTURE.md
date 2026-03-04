@@ -48,10 +48,11 @@ Configurable voice model via `jarvis.ini` (`[tts]` section). Default: `en_US-les
 - Markdown formatting (asterisks, backticks, headers, bullets) is stripped before synthesis via `clean_text_for_speech()`.
 
 ### Claude Code Integration
-Sends transcribed text to `claude` CLI in a subprocess.
+Sends transcribed text to `claude` CLI via `subprocess.Popen` with `--output-format stream-json`.
 - Uses session IDs for conversation continuity (`--session-id` / `--resume`).
-- Configurable timeout (`CLAUDE_TIMEOUT`, default 300s).
-- Spoken acknowledgements if response takes longer than `INITIAL_ACK_DELAY` (default 10s).
+- Configurable timeout (`CLAUDE_TIMEOUT`, default 300s) via `threading.Timer`.
+- Streams JSON events from stdout; parses `tool_use` events to push live status messages (e.g. "Reading jarvis.py", "Running a command") to a `Queue`.
+- Spoken acknowledgements if response takes longer than `INITIAL_ACK_DELAY` (default 10s). Subsequent filler messages prefer the latest tool status from the queue; falls back to canned `STILL_WORKING` messages when no tool events are available.
 
 ### Built-in Commands
 Handled locally without calling Claude:
