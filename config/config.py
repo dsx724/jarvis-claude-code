@@ -4,7 +4,7 @@ CHANNELS = 1
 CHUNK = 1280  # 80ms at 16kHz - openwakeword expects this
 
 # Silence detection config (Silero VAD)
-VAD_THRESHOLD = 0.5            # speech probability threshold
+VAD_THRESHOLD = 0.7            # speech probability threshold
 VAD_CHUNK = 512                # Silero requires 512 samples at 16kHz
 SILENCE_DURATION = 1.0         # seconds of silence after speech to stop
 SILENCE_RATIO = 0.8            # fraction of silence window that must be quiet
