@@ -327,34 +327,34 @@ def main():
 
     while True:
         # Read audio chunk for wake word detection
-            data = stream.read(CHUNK, exception_on_overflow=False)
-            audio_data = np.frombuffer(data, dtype=np.int16)
+        data = stream.read(CHUNK, exception_on_overflow=False)
+        audio_data = np.frombuffer(data, dtype=np.int16)
 
-            # Feed to wake word detector
-            prediction = wake_model.predict(audio_data)
+        # Feed to wake word detector
+        prediction = wake_model.predict(audio_data)
 
-            # Check for wake word activation
-            activated = False
-            for model_name, score in prediction.items():
-                if score > WAKE_WORD_THRESHOLD:
-                    activated = True
-                    break
-            if not activated:
-                continue
+        # Check for wake word activation
+        activated = False
+        for model_name, score in prediction.items():
+            if score > WAKE_WORD_THRESHOLD:
+                activated = True
+                break
+        if not activated:
+            continue
 
-            print("\n*** Wake word detected! ***")
+        print("\n*** Wake word detected! ***")
 
-            # Record until silence
-            audio_bytes = record_until_silence(stream, vad_model)
+        # Record until silence
+        audio_bytes = record_until_silence(stream, vad_model)
 
-            # Transcribe
-            text = transcribe(whisper_model, audio_bytes)
-            if not text:
-                print("(no speech detected)")
-                continue
+        # Transcribe
+        text = transcribe(whisper_model, audio_bytes)
+        if not text:
+            print("(no speech detected)")
+            continue
 
-            print(f"Transcribed: {text}")
-            conversation_logger.info("USER: %s", text)
+        print(f"Transcribed: {text}")
+        conversation_logger.info("USER: %s", text)
 
         # Handle built-in commands without calling Claude API
         text_lower = text.lower().strip().rstrip(".")
