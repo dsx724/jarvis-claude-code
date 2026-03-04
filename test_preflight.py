@@ -139,6 +139,7 @@ def check_function_signatures():
         "transcribe": ["whisper_model", "audio_bytes"],
         "clean_text_for_speech": ["text"],
         "speak": ["tts_voice", "text"],
+        "listen_for_wake_word": ["wake_model", "interrupt_event"],
         "send_to_claude": ["text"],
         "main": [],
     }

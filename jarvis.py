@@ -250,20 +250,53 @@ def clean_text_for_speech(text):
     return text.strip()
 
 
-def speak(tts_voice, text):
-    """Speak text aloud using piper TTS, streaming via PulseAudio."""
+def speak(tts_voice, text, interrupt_event=None):
+    """Speak text aloud using piper TTS, streaming via PulseAudio.
+
+    If interrupt_event is provided (a threading.Event), playback stops
+    early when the event is set (e.g. by wake word detection).
+    Returns True if interrupted, False otherwise.
+    """
     if not text:
-        return
+        return False
 
     text = clean_text_for_speech(text)
     player = PulsePlayer(rate=tts_voice.config.sample_rate)
+    interrupted = False
     try:
         for chunk in tts_voice.synthesize(text):
+            if interrupt_event and interrupt_event.is_set():
+                interrupted = True
+                break
             audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
             player.write(audio_int16.tobytes())
-        player.drain()
+        if not interrupted:
+            player.drain()
     finally:
         player.close()
+    return interrupted
+
+
+def listen_for_wake_word(wake_model, interrupt_event):
+    """Monitor mic for wake word in a background thread, setting interrupt_event when detected.
+
+    Opens its own PulseAudio recording stream so it can listen independently
+    of the main stream. Runs until interrupt_event is set (either by this
+    function detecting the wake word, or externally to signal shutdown).
+    """
+    listener = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
+    try:
+        while not interrupt_event.is_set():
+            data = listener.read(CHUNK, exception_on_overflow=False)
+            audio_data = np.frombuffer(data, dtype=np.int16)
+            prediction = wake_model.predict(audio_data)
+            for model_name, score in prediction.items():
+                if score > WAKE_WORD_THRESHOLD:
+                    print("\n*** Wake word detected (interrupting speech) ***")
+                    interrupt_event.set()
+                    break
+    finally:
+        listener.close()
 
 
 SESSION_ID = str(uuid.uuid4())
@@ -332,33 +365,55 @@ def main():
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGUSR1, restart)
 
-    def speak_and_clear(text):
-        """Speak text, then flush mic buffer and reset wake model to prevent self-triggering."""
-        speak(tts_voice, text)
+    def speak_and_clear(text, interruptible=False):
+        """Speak text, then flush mic buffer and reset wake model to prevent self-triggering.
+
+        If interruptible=True, listens for the wake word during playback and
+        stops early if detected. Returns True if interrupted, False otherwise.
+        """
+        if interruptible:
+            interrupt_event = threading.Event()
+            listener_thread = threading.Thread(
+                target=listen_for_wake_word,
+                args=(wake_model, interrupt_event),
+                daemon=True,
+            )
+            listener_thread.start()
+            interrupted = speak(tts_voice, text, interrupt_event=interrupt_event)
+            interrupt_event.set()  # signal listener to stop if still running
+            listener_thread.join(timeout=1.0)
+        else:
+            interrupted = speak(tts_voice, text)
         stream.flush()
         wake_model.reset()
+        return interrupted
 
     print("\n=== Jarvis is ready. Say 'Hey Jarvis' to activate. ===\n")
     speak_and_clear(random.choice(STARTUP_MESSAGES))
 
+    skip_wake_word = False
     while True:
-        # Read audio chunk for wake word detection
-        data = stream.read(CHUNK, exception_on_overflow=False)
-        audio_data = np.frombuffer(data, dtype=np.int16)
+        if not skip_wake_word:
+            # Read audio chunk for wake word detection
+            data = stream.read(CHUNK, exception_on_overflow=False)
+            audio_data = np.frombuffer(data, dtype=np.int16)
 
-        # Feed to wake word detector
-        prediction = wake_model.predict(audio_data)
+            # Feed to wake word detector
+            prediction = wake_model.predict(audio_data)
 
-        # Check for wake word activation
-        activated = False
-        for model_name, score in prediction.items():
-            if score > WAKE_WORD_THRESHOLD:
-                activated = True
-                break
-        if not activated:
-            continue
+            # Check for wake word activation
+            activated = False
+            for model_name, score in prediction.items():
+                if score > WAKE_WORD_THRESHOLD:
+                    activated = True
+                    break
+            if not activated:
+                continue
 
-        print("\n*** Wake word detected! ***")
+            print("\n*** Wake word detected! ***")
+        else:
+            print("\n*** Speech interrupted — listening for command ***")
+            skip_wake_word = False
 
         # Record until silence
         audio_bytes = record_until_silence(stream, vad_model)
@@ -423,8 +478,10 @@ def main():
         conversation_logger.info("CLAUDE: %s", response)
         print(f"\nClaude: {response}\n")
 
-        # Speak response, then flush mic and reset wake model
-        speak_and_clear(response)
+        # Speak response (interruptible by wake word)
+        interrupted = speak_and_clear(response, interruptible=True)
+        if interrupted:
+            skip_wake_word = True
 
 
 if __name__ == "__main__":

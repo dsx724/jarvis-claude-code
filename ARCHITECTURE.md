@@ -23,7 +23,8 @@ Direct PulseAudio access via ctypes (libpulse-simple). No PyAudio dependency.
 ### Wake Word Detection (openwakeword)
 Uses the `hey_jarvis_v0.1.onnx` model from openwakeword. Runs on ONNX runtime.
 - Feeds 1280-sample (80ms) chunks continuously.
-- Activation threshold: configurable (`WAKE_WORD_THRESHOLD`, default 0.8).
+- Activation threshold: configurable (`WAKE_WORD_THRESHOLD`, default 0.9).
+- **Interruption**: During TTS playback, a background thread opens a separate PulseAudio recording stream and monitors for the wake word. If detected, playback stops immediately and Jarvis goes straight to recording the next command (skipping the normal wake word wait).
 
 ### Voice Activity Detection (Silero VAD)
 ML-based speech/silence detection using `silero-vad` (ONNX mode).
@@ -39,7 +40,8 @@ Uses `small.en` model with int8 quantization on CPU.
 ### Text-to-Speech (Piper)
 Uses `en_US-lessac-medium` voice model.
 - Streams synthesized audio chunks to PulsePlayer.
-- Playback is blocking — microphone is not monitored during TTS to prevent self-triggering (the mic picking up the speaker output and detecting a false wake word).
+- Playback is interruptible by wake word detection via `listen_for_wake_word()` running on a background thread.
+- Markdown formatting (asterisks, backticks, headers, bullets) is stripped before synthesis via `clean_text_for_speech()`.
 
 ### Claude Code Integration
 Sends transcribed text to `claude` CLI in a subprocess.
