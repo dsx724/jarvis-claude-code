@@ -23,7 +23,9 @@ while true; do
                 echo "Preflight passed, restarting."
             else
                 echo "Preflight FAILED. Reverting last commit..."
+                REVERTED_SUBJECT=$(git -C "$SCRIPT_DIR" log -1 --format='%s' HEAD)
                 if git -C "$SCRIPT_DIR" revert --no-edit HEAD; then
+                    echo "$REVERTED_SUBJECT" > "$SCRIPT_DIR/.last_revert_reason"
                     echo "Reverted HEAD. Retrying preflight..."
                     if timeout 120 python "$SCRIPT_DIR/test_preflight.py"; then
                         echo "Preflight passed after revert, restarting."

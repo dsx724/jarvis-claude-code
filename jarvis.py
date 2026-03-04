@@ -545,6 +545,16 @@ def main():
     print(f"\n=== {wn} is ready. Say 'Hey {wn}' to activate. ===\n")
     speak_and_clear(random.choice(STARTUP_MESSAGES))
 
+    # Notify user if the previous commit was auto-reverted
+    revert_marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_revert_reason")
+    if os.path.exists(revert_marker):
+        try:
+            reason = open(revert_marker).read().strip()
+            os.remove(revert_marker)
+            speak_and_clear(f"Heads up: the last change was automatically reverted because it failed preflight checks. It was: {reason}")
+        except OSError:
+            pass
+
     skip_wake_word = False
     # Keep a rolling buffer of recent audio chunks so we can capture speech
     # that starts immediately after (or overlapping with) the wake word.
