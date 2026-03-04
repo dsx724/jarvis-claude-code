@@ -225,13 +225,17 @@ def load_models():
     return wake_model, whisper_model, tts_voice, vad_model
 
 
-def record_until_silence(stream, vad_model):
-    """Record audio until speech is followed by silence using Silero VAD. Returns raw audio bytes."""
+def record_until_silence(stream, vad_model, pre_roll=None):
+    """Record audio until speech is followed by silence using Silero VAD. Returns raw audio bytes.
+
+    pre_roll: optional list of raw audio byte chunks to prepend (captures speech
+    that arrived between wake word detection and the start of recording).
+    """
     import torch
 
     print("Listening...")
     vad_model.reset_states()
-    frames = []
+    frames = list(pre_roll) if pre_roll else []
     speech_detected = False
     chunks_per_second = RATE / VAD_CHUNK
     silence_window_size = int(SILENCE_DURATION * chunks_per_second)
@@ -517,10 +521,15 @@ def main():
     speak_and_clear(random.choice(STARTUP_MESSAGES))
 
     skip_wake_word = False
+    # Keep a rolling buffer of recent audio chunks so we can capture speech
+    # that starts immediately after (or overlapping with) the wake word.
+    # 8 chunks × 80ms = 640ms of pre-roll audio.
+    pre_roll_buf = deque(maxlen=8)
     while True:
         if not skip_wake_word:
             # Read audio chunk for wake word detection
             data = stream.read(CHUNK, exception_on_overflow=False)
+            pre_roll_buf.append(data)
             audio_data = np.frombuffer(data, dtype=np.int16)
 
             # Feed to wake word detector
@@ -540,8 +549,9 @@ def main():
             print("\n*** Speech interrupted — listening for command ***")
             skip_wake_word = False
 
-        # Record until silence
-        audio_bytes = record_until_silence(stream, vad_model)
+        # Record until silence, prepending buffered audio from wake word detection
+        audio_bytes = record_until_silence(stream, vad_model, pre_roll=list(pre_roll_buf))
+        pre_roll_buf.clear()
 
         # Reset wake model and flush mic buffer after every recording
         # to prevent stale audio from re-triggering the wake word

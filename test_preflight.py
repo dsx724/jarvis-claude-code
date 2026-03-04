@@ -162,7 +162,7 @@ def check_function_signatures():
     expected = {
         "reset_wake_model": ["wake_model"],
         "load_models": [],
-        "record_until_silence": ["stream", "vad_model"],
+        "record_until_silence": ["stream", "vad_model", "pre_roll"],
         "transcribe": ["whisper_model", "audio_bytes"],
         "clean_text_for_speech": ["text"],
         "is_self_echo": ["transcribed"],
