@@ -592,6 +592,43 @@ def main():
             print("(no speech detected)")
             continue
 
+        # Handle built-in commands before echo filtering — keywords like
+        # "restart" are substrings of canned responses ("Restarting now")
+        # and would otherwise be incorrectly filtered as self-echo.
+        text_lower = text.lower().strip().rstrip(".")
+        wn_lower = WAKE_WORD_NAME.lower()
+        if text_lower in ("restart", "restart yourself", f"restart {wn_lower}",
+                          "please restart", "reboot", "reboot yourself"):
+            print(f"Transcribed: {text}")
+            print("Built-in command: restart")
+            speak(tts_voice, "Restarting now.")
+            os._exit(42)
+
+        if text_lower in ("revert", "revert yourself", f"revert {wn_lower}",
+                          "revert the last change", "undo the last change",
+                          "roll back", "rollback"):
+            print(f"Transcribed: {text}")
+            print("Built-in command: revert")
+            repo_dir = os.path.dirname(os.path.abspath(__file__))
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, cwd=repo_dir
+            )
+            if result.returncode != 0:
+                speak_and_clear("Sorry, I couldn't find the git repository.")
+                continue
+            short_hash = result.stdout.strip()[:7]
+            revert = subprocess.run(
+                ["git", "revert", "--no-edit", "HEAD"],
+                capture_output=True, text=True, cwd=repo_dir
+            )
+            if revert.returncode != 0:
+                speak_and_clear("Sorry, the revert failed.")
+                print(f"git revert error: {revert.stderr}")
+                continue
+            speak(tts_voice, f"Reverted commit {short_hash}. Restarting now.")
+            os._exit(42)
+
         # Filter out self-echo (mic picking up Jarvis's own speech)
         # If the same echo is repeated multiple times, it's likely intentional.
         global _last_echo_text, _echo_repeat_count
@@ -614,39 +651,6 @@ def main():
 
         print(f"Transcribed: {text}")
         conversation_logger.info("USER: %s", text)
-
-        # Handle built-in commands without calling Claude API
-        text_lower = text.lower().strip().rstrip(".")
-        wn_lower = WAKE_WORD_NAME.lower()
-        if text_lower in ("restart", "restart yourself", f"restart {wn_lower}",
-                          "please restart", "reboot", "reboot yourself"):
-            print("Built-in command: restart")
-            speak(tts_voice, "Restarting now.")
-            os._exit(42)
-
-        if text_lower in ("revert", "revert yourself", f"revert {wn_lower}",
-                          "revert the last change", "undo the last change",
-                          "roll back", "rollback"):
-            print("Built-in command: revert")
-            repo_dir = os.path.dirname(os.path.abspath(__file__))
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                capture_output=True, text=True, cwd=repo_dir
-            )
-            if result.returncode != 0:
-                speak_and_clear("Sorry, I couldn't find the git repository.")
-                continue
-            short_hash = result.stdout.strip()[:7]
-            revert = subprocess.run(
-                ["git", "revert", "--no-edit", "HEAD"],
-                capture_output=True, text=True, cwd=repo_dir
-            )
-            if revert.returncode != 0:
-                speak_and_clear("Sorry, the revert failed.")
-                print(f"git revert error: {revert.stderr}")
-                continue
-            speak(tts_voice, f"Reverted commit {short_hash}. Restarting now.")
-            os._exit(42)
 
         # Send to Claude, with a spoken filler if it takes too long
         result_holder = {}
