@@ -314,6 +314,11 @@ def clean_text_for_speech(text):
 # Track recently spoken text for echo detection
 _recently_spoken = []
 ECHO_SIMILARITY_THRESHOLD = 0.5
+# If the same echo-like text is heard this many times consecutively,
+# treat it as intentional speech rather than an echo.
+ECHO_REPEAT_THRESHOLD = 2
+_last_echo_text = None
+_echo_repeat_count = 0
 
 # Built-in command responses (not from config, but need echo filtering)
 BUILTIN_RESPONSES = [
@@ -582,9 +587,24 @@ def main():
             continue
 
         # Filter out self-echo (mic picking up Jarvis's own speech)
+        # If the same echo is repeated multiple times, it's likely intentional.
+        global _last_echo_text, _echo_repeat_count
         if is_self_echo(text):
-            print(f"(filtered self-echo: {text})")
-            continue
+            norm = _normalize(text)
+            if norm == _last_echo_text:
+                _echo_repeat_count += 1
+            else:
+                _last_echo_text = norm
+                _echo_repeat_count = 1
+            if _echo_repeat_count < ECHO_REPEAT_THRESHOLD:
+                print(f"(filtered self-echo: {text})")
+                continue
+            print(f"(echo repeated {_echo_repeat_count}x — treating as intentional)")
+            _last_echo_text = None
+            _echo_repeat_count = 0
+        else:
+            _last_echo_text = None
+            _echo_repeat_count = 0
 
         print(f"Transcribed: {text}")
         conversation_logger.info("USER: %s", text)
