@@ -94,10 +94,15 @@ def check_config_values():
             errors.append(f"{name} should be {expected}, got {type(val)}")
 
     # String checks
-    for name in ["TTS_ENGINE", "TTS_VOICE", "STT_MODEL"]:
+    for name in ["TTS_ENGINE", "TTS_VOICE", "STT_MODEL", "WAKE_WORD_NAME"]:
         val = getattr(mod, name)
         if not isinstance(val, str) or not val.strip():
             errors.append(f"{name} must be a non-empty string")
+
+    # Wake word model validation
+    supported_wake_words = ("jarvis", "marvin", "mycroft")
+    if mod.WAKE_WORD_NAME not in supported_wake_words:
+        errors.append(f"WAKE_WORD_NAME={mod.WAKE_WORD_NAME} not in {supported_wake_words}")
 
     # STT model validation
     supported_stt_models = ("tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium", "medium.en", "large-v3")

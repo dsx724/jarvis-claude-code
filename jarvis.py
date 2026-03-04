@@ -45,6 +45,7 @@ SILENCE_DURATION = _cfg.getfloat("vad", "silence_duration")
 PRE_SPEECH_TIMEOUT = _cfg.getfloat("vad", "pre_speech_timeout")
 SILENCE_RATIO = _cfg.getfloat("vad", "silence_ratio")
 MAX_RECORD_SECONDS = _cfg.getint("vad", "max_record_seconds")
+WAKE_WORD_NAME = _cfg.get("wake_word", "name")
 WAKE_WORD_THRESHOLD = _cfg.getfloat("wake_word", "threshold")
 STT_MODEL = _cfg.get("stt", "model")
 CLAUDE_TIMEOUT = _cfg.getint("claude", "timeout")
@@ -185,7 +186,7 @@ def load_models():
     from openwakeword.model import Model as WakeModel
     wake_model = WakeModel(wakeword_model_paths=[
         os.path.join(os.path.dirname(__import__('openwakeword').__file__),
-                     "resources", "models", "hey_jarvis_v0.1.onnx")
+                     "resources", "models", f"hey_{WAKE_WORD_NAME}_v0.1.onnx")
     ])
 
     print(f"Loading whisper model ({STT_MODEL})...")
@@ -306,7 +307,7 @@ def clean_text_for_speech(text):
     # Remove bullet point markers
     text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
     # Replace wake word so TTS doesn't trigger the wake word detector
-    text = re.sub(r'\bjarvis\b', 'wake word', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b' + re.escape(WAKE_WORD_NAME) + r'\b', 'wake word', text, flags=re.IGNORECASE)
     return text.strip()
 
 
@@ -529,7 +530,8 @@ def main():
         reset_wake_model(wake_model)
         return interrupted
 
-    print("\n=== Jarvis is ready. Say 'Hey Jarvis' to activate. ===\n")
+    wn = WAKE_WORD_NAME.capitalize()
+    print(f"\n=== {wn} is ready. Say 'Hey {wn}' to activate. ===\n")
     speak_and_clear(random.choice(STARTUP_MESSAGES))
 
     skip_wake_word = False
@@ -589,13 +591,14 @@ def main():
 
         # Handle built-in commands without calling Claude API
         text_lower = text.lower().strip().rstrip(".")
-        if text_lower in ("restart", "restart yourself", "restart jarvis",
+        wn_lower = WAKE_WORD_NAME.lower()
+        if text_lower in ("restart", "restart yourself", f"restart {wn_lower}",
                           "please restart", "reboot", "reboot yourself"):
             print("Built-in command: restart")
             speak(tts_voice, "Restarting now.")
             os._exit(42)
 
-        if text_lower in ("revert", "revert yourself", "revert jarvis",
+        if text_lower in ("revert", "revert yourself", f"revert {wn_lower}",
                           "revert the last change", "undo the last change",
                           "roll back", "rollback"):
             print("Built-in command: revert")

@@ -21,9 +21,10 @@ Direct PulseAudio access via ctypes (libpulse-simple). No PyAudio dependency.
 - **PulsePlayer**: Streams int16 audio for TTS playback with drain/flush support.
 
 ### Wake Word Detection (openwakeword)
-Uses the `hey_jarvis_v0.1.onnx` model from openwakeword. Runs on ONNX runtime.
+Uses openwakeword with a configurable wake word (`WAKE_WORD_NAME`, default `jarvis`). Model file is resolved as `hey_<name>_v0.1.onnx`. Supported names: `jarvis`, `marvin`, `mycroft`. Runs on ONNX runtime.
 - Feeds 1280-sample (80ms) chunks continuously.
 - Activation threshold: configurable (`WAKE_WORD_THRESHOLD`, default 0.9).
+- The wake word name is used throughout: model selection, TTS filtering (prevents TTS from saying the wake word and re-triggering), built-in command phrases (e.g. "restart jarvis"), and the ready message.
 - **Interruption**: During TTS playback, a background thread opens a separate PulseAudio recording stream and monitors for the wake word. If detected, playback stops immediately and Jarvis goes straight to recording the next command (skipping the normal wake word wait).
 
 ### Voice Activity Detection (Silero VAD)
@@ -76,6 +77,7 @@ All tunable settings live in `config/jarvis.ini` (INI format), loaded directly b
 | CHUNK | 1280 | Wake word detection chunk size (80ms) |
 | VAD_CHUNK | 512 | Silero VAD chunk size (32ms) |
 | VAD_THRESHOLD | 0.5 | Speech probability threshold |
+| WAKE_WORD_NAME | jarvis | Wake word name (jarvis, marvin, mycroft) |
 | WAKE_WORD_THRESHOLD | 0.9 | Wake word activation threshold |
 | SILENCE_DURATION | 1.0s | Silence window to end recording |
 | MAX_RECORD_SECONDS | 15 | Recording safety cap |
