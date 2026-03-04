@@ -305,10 +305,8 @@ def clean_text_for_speech(text):
     text = re.sub(r'`{1,3}', '', text)
     # Remove bullet point markers
     text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
-    # Remove wake word so TTS doesn't trigger the wake word detector
-    text = re.sub(r'\bjarvis\b', '', text, flags=re.IGNORECASE)
-    # Collapse any resulting double spaces
-    text = re.sub(r'  +', ' ', text)
+    # Replace wake word so TTS doesn't trigger the wake word detector
+    text = re.sub(r'\bjarvis\b', 'wake word', text, flags=re.IGNORECASE)
     return text.strip()
 
 
