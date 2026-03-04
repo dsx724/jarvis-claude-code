@@ -295,7 +295,9 @@ def transcribe(whisper_model, audio_bytes):
             wf.writeframes(audio_bytes)
 
     try:
-        segments, info = whisper_model.transcribe(tmp_path, beam_size=5)
+        segments, info = whisper_model.transcribe(
+            tmp_path, beam_size=1, without_timestamps=True, vad_filter=True
+        )
         text = " ".join(seg.text.strip() for seg in segments).strip()
         return text
     finally:
