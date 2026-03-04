@@ -52,6 +52,18 @@ ACKNOWLEDGEMENTS = [
     "Just a moment.",
 ]
 
+# Secondary acknowledgements for long-running requests (spoken every few seconds)
+STILL_WORKING = [
+    "Still working on it.",
+    "Almost there.",
+    "Still thinking.",
+    "Hang on, still going.",
+    "Bear with me.",
+    "Still on it.",
+]
+
+STILL_WORKING_INTERVAL = 5  # seconds between secondary acknowledgements
+
 
 def load_models():
     """Load wake word and whisper models."""
@@ -278,7 +290,8 @@ def main():
 
                 if not done_event.wait(timeout=1.0):
                     speak(tts_voice, random.choice(ACKNOWLEDGEMENTS))
-                    done_event.wait()
+                    while not done_event.wait(timeout=STILL_WORKING_INTERVAL):
+                        speak(tts_voice, random.choice(STILL_WORKING))
 
                 response = result_holder["response"]
                 print(f"\nClaude: {response}\n")
