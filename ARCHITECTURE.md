@@ -9,7 +9,8 @@ Voice assistant that listens for a wake word, records speech, transcribes it, se
 - `agents/main/CLAUDE.md` — System prompt for Claude Code sessions.
 - `logs/` — Runtime logs (gitignored): `error.log`, `conversation.log`.
 - `voices/` — Piper TTS voice models (downloaded on first run).
-- `jarvis.sh` — Launcher script with auto-restart on exit code 42.
+- `test_preflight.py` — Pre-restart validation checks (safety gate).
+- `jarvis.sh` — Launcher script with auto-restart on exit code 42 and preflight gate.
 - `jarvis.service` — systemd unit file.
 
 ## Components
@@ -82,6 +83,28 @@ All tunable constants live in `config/config.py`. Key values:
 - **piper-tts**: Text-to-speech (ONNX)
 - **numpy**: Audio array processing
 - **torch**: Tensor ops for Silero VAD
+
+## Preflight Validation (`test_preflight.py`)
+
+Safety gate between code changes and restart. Runs automatically in `jarvis.sh` after exit code 42, before spawning a new Jarvis process.
+
+### Checks (ordered fastest-first)
+1. **Syntax validation** — `py_compile` on `jarvis.py`, `config/config.py`, `config/__init__.py`.
+2. **Config import** — Mirrors the exact import statement from `jarvis.py`.
+3. **Config value validation** — Type checks, range checks (e.g., `0 < VAD_THRESHOLD <= 1.0`), non-empty message lists.
+4. **Module import** — `importlib` loads `jarvis.py` (catches broken imports, missing deps).
+5. **Function signatures** — Verifies `load_models`, `record_until_silence`, `transcribe`, `speak`, `send_to_claude`, `main` exist with expected params.
+6. **Model loading** — Loads all 4 models (wake word, whisper, VAD, TTS).
+
+Exits 0 on pass, 1 on fail. All checks run (no early exit) to give a complete picture.
+
+### Auto-revert flow (in `jarvis.sh`)
+1. Jarvis exits with code 42 (restart requested).
+2. `test_preflight.py` is syntax-checked first, then run with a 120s timeout.
+3. If preflight passes → restart normally.
+4. If preflight fails → `git revert --no-edit HEAD`.
+   - If revert succeeds, re-run preflight and restart.
+   - If revert fails, fallback: `git checkout HEAD~1 -- jarvis.py config/config.py`.
 
 ## Process Management
 Runs as a systemd service. Exit code 42 triggers restart (used by built-in restart/revert commands and SIGUSR1). SIGINT triggers graceful shutdown with spoken goodbye.
