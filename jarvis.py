@@ -201,7 +201,6 @@ def speak(tts_voice, text):
 SESSION_ID = str(uuid.uuid4())
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-AGENTS_MAIN_DIR = os.path.join(SCRIPT_DIR, "agents", "main")
 
 error_logger = logging.getLogger("jarvis.error")
 error_logger.setLevel(logging.ERROR)
@@ -211,7 +210,7 @@ error_logger.addHandler(_error_handler)
 
 conversation_logger = logging.getLogger("jarvis.conversation")
 conversation_logger.setLevel(logging.INFO)
-_conv_handler = logging.FileHandler(os.path.join(AGENTS_MAIN_DIR, "conversation.log"))
+_conv_handler = logging.FileHandler("conversation.log")
 _conv_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 conversation_logger.addHandler(_conv_handler)
 
