@@ -59,6 +59,7 @@ def check_config_import():
         RATE, CHANNELS, CHUNK,
         VAD_THRESHOLD, VAD_CHUNK, SILENCE_DURATION, SILENCE_RATIO, MAX_RECORD_SECONDS,
         WAKE_WORD_THRESHOLD, CLAUDE_TIMEOUT, INITIAL_ACK_DELAY,
+        PRE_SPEECH_TIMEOUT,
         ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
         STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
         TTS_ENGINE, TTS_VOICE,
@@ -74,6 +75,7 @@ def check_config_values():
         RATE, CHANNELS, CHUNK,
         VAD_THRESHOLD, VAD_CHUNK, SILENCE_DURATION, SILENCE_RATIO, MAX_RECORD_SECONDS,
         WAKE_WORD_THRESHOLD, CLAUDE_TIMEOUT, INITIAL_ACK_DELAY,
+        PRE_SPEECH_TIMEOUT,
         ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
         STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
         TTS_ENGINE, TTS_VOICE,
@@ -90,6 +92,7 @@ def check_config_values():
         ("CLAUDE_TIMEOUT", CLAUDE_TIMEOUT, (int, float)),
         ("STILL_WORKING_INTERVAL", STILL_WORKING_INTERVAL, (int, float)),
         ("INITIAL_ACK_DELAY", INITIAL_ACK_DELAY, (int, float)),
+        ("PRE_SPEECH_TIMEOUT", PRE_SPEECH_TIMEOUT, (int, float)),
         ("VAD_THRESHOLD", VAD_THRESHOLD, (int, float)),
         ("SILENCE_DURATION", SILENCE_DURATION, (int, float)),
         ("SILENCE_RATIO", SILENCE_RATIO, (int, float)),
@@ -130,6 +133,8 @@ def check_config_values():
         errors.append(f"VAD_CHUNK={VAD_CHUNK} must be positive")
     if CLAUDE_TIMEOUT <= 0:
         errors.append(f"CLAUDE_TIMEOUT={CLAUDE_TIMEOUT} must be positive")
+    if PRE_SPEECH_TIMEOUT <= 0:
+        errors.append(f"PRE_SPEECH_TIMEOUT={PRE_SPEECH_TIMEOUT} must be positive")
 
     # Non-empty message lists
     for name, lst in [

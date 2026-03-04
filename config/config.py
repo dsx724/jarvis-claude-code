@@ -17,6 +17,7 @@ CHUNK = _cfg.getint("audio", "chunk")
 VAD_THRESHOLD = _cfg.getfloat("vad", "threshold")
 VAD_CHUNK = _cfg.getint("vad", "chunk")
 SILENCE_DURATION = _cfg.getfloat("vad", "silence_duration")
+PRE_SPEECH_TIMEOUT = _cfg.getfloat("vad", "pre_speech_timeout")
 SILENCE_RATIO = _cfg.getfloat("vad", "silence_ratio")
 MAX_RECORD_SECONDS = _cfg.getint("vad", "max_record_seconds")
 

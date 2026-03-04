@@ -28,6 +28,7 @@ from config import (
     RATE, CHANNELS, CHUNK,
     VAD_THRESHOLD, VAD_CHUNK, SILENCE_DURATION, SILENCE_RATIO, MAX_RECORD_SECONDS,
     WAKE_WORD_THRESHOLD, CLAUDE_TIMEOUT, INITIAL_ACK_DELAY,
+    PRE_SPEECH_TIMEOUT,
     ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
     STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
     TTS_ENGINE, TTS_VOICE,
@@ -198,11 +199,12 @@ def record_until_silence(stream, vad_model):
     speech_detected = False
     chunks_per_second = RATE / VAD_CHUNK
     silence_window_size = int(SILENCE_DURATION * chunks_per_second)
+    pre_speech_chunks = int(PRE_SPEECH_TIMEOUT * chunks_per_second)
 
     # Rolling window: track whether each recent chunk was silent
     window = deque(maxlen=silence_window_size)
 
-    for _ in range(int(MAX_RECORD_SECONDS * chunks_per_second)):
+    for chunk_idx in range(int(MAX_RECORD_SECONDS * chunks_per_second)):
         data = stream.read(VAD_CHUNK, exception_on_overflow=False)
         frames.append(data)
 
@@ -214,6 +216,11 @@ def record_until_silence(stream, vad_model):
 
         if not is_silent:
             speech_detected = True
+
+        # Give up if no speech detected within the pre-speech timeout
+        if not speech_detected and chunk_idx >= pre_speech_chunks:
+            print("No speech detected, giving up.")
+            return b""
 
         if speech_detected:
             window.append(is_silent)
