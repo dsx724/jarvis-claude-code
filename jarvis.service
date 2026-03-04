@@ -1,0 +1,14 @@
+[Unit]
+Description=Jarvis Voice Assistant for Claude Code
+After=sound.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dxue/git/claude/jarvis
+ExecStart=/home/dxue/git/claude/jarvis/jarvis.sh
+Restart=on-failure
+RestartSec=5
+Environment=PATH=/home/dxue/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
