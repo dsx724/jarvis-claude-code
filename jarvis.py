@@ -357,6 +357,10 @@ def is_self_echo(transcribed):
     return False
 
 
+# Lock held while TTS audio is playing, so signal handlers can wait for it.
+_tts_lock = threading.Lock()
+
+
 def speak(tts_voice, text, interrupt_event=None):
     """Speak text aloud using piper TTS, streaming via PulseAudio.
 
@@ -373,22 +377,23 @@ def speak(tts_voice, text, interrupt_event=None):
     # Write audio in small sub-chunks so we can check for interrupts frequently.
     # 2048 samples at 22050 Hz ≈ 93ms — responsive enough for wake word interrupts.
     sub_chunk_samples = 2048
-    try:
-        for chunk in tts_voice.synthesize(text):
-            audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
-            audio_bytes = audio_int16.tobytes()
-            bytes_per_sub = sub_chunk_samples * 2  # 16-bit = 2 bytes per sample
-            for offset in range(0, len(audio_bytes), bytes_per_sub):
-                if interrupt_event and interrupt_event.is_set():
-                    interrupted = True
+    with _tts_lock:
+        try:
+            for chunk in tts_voice.synthesize(text):
+                audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
+                audio_bytes = audio_int16.tobytes()
+                bytes_per_sub = sub_chunk_samples * 2  # 16-bit = 2 bytes per sample
+                for offset in range(0, len(audio_bytes), bytes_per_sub):
+                    if interrupt_event and interrupt_event.is_set():
+                        interrupted = True
+                        break
+                    player.write(audio_bytes[offset:offset + bytes_per_sub])
+                if interrupted:
                     break
-                player.write(audio_bytes[offset:offset + bytes_per_sub])
-            if interrupted:
-                break
-        if not interrupted:
-            player.drain()
-    finally:
-        player.close()
+            if not interrupted:
+                player.drain()
+        finally:
+            player.close()
     return interrupted
 
 
@@ -473,7 +478,8 @@ def main():
         os._exit(0)
 
     def restart(sig, frame):
-        print("\nRestarting...")
+        print("\nRestarting (waiting for TTS to finish)...")
+        _tts_lock.acquire()  # wait for any in-progress speech to complete
         os._exit(42)
 
     signal.signal(signal.SIGINT, shutdown)

@@ -6,7 +6,7 @@ cd "$SCRIPT_DIR/agents/main"
 "$SCRIPT_DIR/setup.sh"
 source "$SCRIPT_DIR/venv/bin/activate"
 
-trap 'kill -9 $PID 2>/dev/null; exit 0' INT TERM
+trap 'kill -INT $PID 2>/dev/null; wait $PID 2>/dev/null; exit 0' INT TERM
 
 while true; do
     python -u "$SCRIPT_DIR/jarvis.py" "$@" &
