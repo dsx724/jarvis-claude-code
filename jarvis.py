@@ -570,14 +570,16 @@ def main():
                 continue
 
             print("\n*** Wake word detected! ***")
-            # Discard buffered audio — it contains the wake word itself
-            pre_roll_buf.clear()
+            # Keep only the last 2 chunks (~160ms) — recent enough to capture
+            # speech that starts right after the wake word, but discards the
+            # earlier chunks that contain the wake word itself.
+            while len(pre_roll_buf) > 2:
+                pre_roll_buf.popleft()
         else:
             print("\n*** Speech interrupted — listening for command ***")
             skip_wake_word = False
 
-        # Record until silence (no pre-roll after wake word to avoid
-        # including "Jarvis" in the transcription)
+        # Record until silence, prepending buffered audio
         audio_bytes = record_until_silence(stream, vad_model, pre_roll=list(pre_roll_buf))
         pre_roll_buf.clear()
 
