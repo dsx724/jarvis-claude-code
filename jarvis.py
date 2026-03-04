@@ -51,12 +51,25 @@ DEBUG_ECHO = _cfg.getboolean("debug", "echo", fallback=False)
 # Debug / profiling helpers
 # ---------------------------------------------------------------------------
 _t0 = time.perf_counter()
+_debug_logger = None
+
+def _get_debug_logger():
+    """Lazily initialize the debug file logger (needs SCRIPT_DIR which is set later)."""
+    global _debug_logger
+    if _debug_logger is None:
+        _debug_logger = logging.getLogger("jarvis.debug")
+        _debug_logger.setLevel(logging.DEBUG)
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
+        handler = logging.FileHandler(os.path.join(_script_dir, "logs", "debug.log"))
+        handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+        _debug_logger.addHandler(handler)
+    return _debug_logger
 
 def debug_log(flag, msg):
-    """Print a timestamped debug message when the given flag is enabled."""
+    """Log a timestamped debug message to logs/debug.log when the given flag is enabled."""
     if flag:
         elapsed = time.perf_counter() - _t0
-        print(f"[DEBUG +{elapsed:8.3f}s] {msg}")
+        _get_debug_logger().debug("[+%8.3fs] %s", elapsed, msg)
 
 @contextmanager
 def debug_timer(flag, label):
