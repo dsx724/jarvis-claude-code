@@ -334,13 +334,21 @@ def speak(tts_voice, text, interrupt_event=None):
     text = clean_text_for_speech(text)
     player = PulsePlayer(rate=tts_voice.config.sample_rate)
     interrupted = False
+    # Write audio in small sub-chunks so we can check for interrupts frequently.
+    # 2048 samples at 22050 Hz ≈ 93ms — responsive enough for wake word interrupts.
+    sub_chunk_samples = 2048
     try:
         for chunk in tts_voice.synthesize(text):
-            if interrupt_event and interrupt_event.is_set():
-                interrupted = True
-                break
             audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
-            player.write(audio_int16.tobytes())
+            audio_bytes = audio_int16.tobytes()
+            bytes_per_sub = sub_chunk_samples * 2  # 16-bit = 2 bytes per sample
+            for offset in range(0, len(audio_bytes), bytes_per_sub):
+                if interrupt_event and interrupt_event.is_set():
+                    interrupted = True
+                    break
+                player.write(audio_bytes[offset:offset + bytes_per_sub])
+            if interrupted:
+                break
         if not interrupted:
             player.drain()
     finally:
