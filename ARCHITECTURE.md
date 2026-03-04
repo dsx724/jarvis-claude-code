@@ -35,7 +35,7 @@ ML-based speech/silence detection using `silero-vad` (ONNX mode).
 - Safety cap: 15 seconds max recording.
 
 ### Speech-to-Text (faster-whisper)
-Uses `small.en` model with int8 quantization on CPU.
+Uses configurable model (default `medium.en`) with int8 quantization on CPU. Set via `[stt] model` in `jarvis.ini`.
 - Writes audio to a temp WAV file, transcribes, deletes.
 - **Echo filtering**: After transcription, checks if the text matches something Jarvis recently said (via `is_self_echo()`). Uses fuzzy matching (`SequenceMatcher`) and substring checks against the last 3 spoken texts to filter out the mic picking up Jarvis's own TTS output.
 
@@ -81,6 +81,7 @@ All tunable settings live in `jarvis.ini` (INI format), loaded by `config/config
 | SILENCE_DURATION | 1.0s | Silence window to end recording |
 | MAX_RECORD_SECONDS | 15 | Recording safety cap |
 | CLAUDE_TIMEOUT | 300 | Claude API timeout (seconds) |
+| STT_MODEL | medium.en | Faster-whisper model for STT |
 | TTS_ENGINE | piper | Text-to-speech engine |
 | TTS_VOICE | en_US-lessac-medium | Piper voice model name |
 | INITIAL_ACK_DELAY | 10.0 | Seconds before first spoken filler |

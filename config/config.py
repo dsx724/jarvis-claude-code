@@ -24,6 +24,9 @@ MAX_RECORD_SECONDS = _cfg.getint("vad", "max_record_seconds")
 # Wake word detection
 WAKE_WORD_THRESHOLD = _cfg.getfloat("wake_word", "threshold")
 
+# Speech-to-text
+STT_MODEL = _cfg.get("stt", "model")
+
 # Claude API
 CLAUDE_TIMEOUT = _cfg.getint("claude", "timeout")
 

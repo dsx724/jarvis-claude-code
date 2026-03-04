@@ -31,7 +31,7 @@ from config import (
     PRE_SPEECH_TIMEOUT,
     ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
     STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
-    TTS_ENGINE, TTS_VOICE,
+    TTS_ENGINE, TTS_VOICE, STT_MODEL,
 )
 
 # PulseAudio simple API via ctypes
@@ -152,9 +152,9 @@ def load_models():
                      "resources", "models", "hey_jarvis_v0.1.onnx")
     ])
 
-    print("Loading whisper model (medium.en)...")
+    print(f"Loading whisper model ({STT_MODEL})...")
     from faster_whisper import WhisperModel
-    whisper_model = WhisperModel("medium.en", device="cpu", compute_type="int8")
+    whisper_model = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
 
     print("Loading Silero VAD model...")
     from silero_vad import load_silero_vad

@@ -44,7 +44,7 @@ def check_syntax():
         raise FileNotFoundError(f"jarvis.ini not found at {ini_path}")
     cfg = configparser.ConfigParser()
     cfg.read(ini_path)
-    required_sections = ["audio", "vad", "wake_word", "claude", "tts", "timing", "messages"]
+    required_sections = ["audio", "vad", "wake_word", "stt", "claude", "tts", "timing", "messages"]
     missing = [s for s in required_sections if s not in cfg]
     if missing:
         raise ValueError(f"jarvis.ini missing sections: {missing}")
@@ -62,7 +62,7 @@ def check_config_import():
         PRE_SPEECH_TIMEOUT,
         ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
         STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
-        TTS_ENGINE, TTS_VOICE,
+        TTS_ENGINE, TTS_VOICE, STT_MODEL,
     )
 
 
@@ -78,7 +78,7 @@ def check_config_values():
         PRE_SPEECH_TIMEOUT,
         ACKNOWLEDGEMENTS, STILL_WORKING, STILL_WORKING_INTERVAL,
         STARTUP_MESSAGES, SHUTDOWN_MESSAGES,
-        TTS_ENGINE, TTS_VOICE,
+        TTS_ENGINE, TTS_VOICE, STT_MODEL,
     )
     errors = []
 
@@ -105,9 +105,15 @@ def check_config_values():
     for name, val in [
         ("TTS_ENGINE", TTS_ENGINE),
         ("TTS_VOICE", TTS_VOICE),
+        ("STT_MODEL", STT_MODEL),
     ]:
         if not isinstance(val, str) or not val.strip():
             errors.append(f"{name} must be a non-empty string")
+
+    # STT model validation
+    supported_stt_models = ("tiny", "tiny.en", "base", "base.en", "small", "small.en", "medium", "medium.en", "large-v3")
+    if STT_MODEL not in supported_stt_models:
+        errors.append(f"STT_MODEL={STT_MODEL} not in {supported_stt_models}")
 
     # TTS engine validation
     supported_engines = ("piper",)
