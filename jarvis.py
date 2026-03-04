@@ -557,11 +557,14 @@ def main():
                 continue
 
             print("\n*** Wake word detected! ***")
+            # Discard buffered audio — it contains the wake word itself
+            pre_roll_buf.clear()
         else:
             print("\n*** Speech interrupted — listening for command ***")
             skip_wake_word = False
 
-        # Record until silence, prepending buffered audio from wake word detection
+        # Record until silence (no pre-roll after wake word to avoid
+        # including "Jarvis" in the transcription)
         audio_bytes = record_until_silence(stream, vad_model, pre_roll=list(pre_roll_buf))
         pre_roll_buf.clear()
 
