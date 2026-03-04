@@ -319,7 +319,7 @@ def clean_text_for_speech(text):
 
 # Track recently spoken text for echo detection
 _recently_spoken = []
-ECHO_SIMILARITY_THRESHOLD = 0.5
+ECHO_SIMILARITY_THRESHOLD = 0.7
 # If the same echo-like text is heard this many times consecutively,
 # treat it as intentional speech rather than an echo.
 ECHO_REPEAT_THRESHOLD = 2
@@ -363,7 +363,10 @@ def _matches_any(norm_t, candidates):
     for norm_s in candidates:
         if not norm_s:
             continue
-        if norm_t in norm_s or norm_s in norm_t:
+        # Substring match only when the lengths are comparable (within 2x).
+        # This prevents short canned messages from matching inside long user speech.
+        len_ratio = len(norm_t) / len(norm_s) if norm_s else 0
+        if 0.5 <= len_ratio <= 2.0 and (norm_t in norm_s or norm_s in norm_t):
             return True
         ratio = SequenceMatcher(None, norm_t, norm_s).ratio()
         if ratio >= ECHO_SIMILARITY_THRESHOLD:
