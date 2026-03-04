@@ -148,9 +148,9 @@ def load_models():
                      "resources", "models", "hey_jarvis_v0.1.onnx")
     ])
 
-    print("Loading whisper model (small.en)...")
+    print("Loading whisper model (medium.en)...")
     from faster_whisper import WhisperModel
-    whisper_model = WhisperModel("small.en", device="cpu", compute_type="int8")
+    whisper_model = WhisperModel("medium.en", device="cpu", compute_type="int8")
 
     print("Loading Silero VAD model...")
     from silero_vad import load_silero_vad
