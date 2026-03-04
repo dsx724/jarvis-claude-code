@@ -3,6 +3,7 @@
 
 import ctypes
 import os
+import random
 import signal
 import subprocess
 import sys
@@ -38,6 +39,18 @@ FORMAT = pyaudio.paInt16
 NOISE_MULTIPLIER = 3.0         # speech threshold = ambient_rms * this
 SILENCE_DURATION = 1.5         # seconds of silence after speech to stop
 MAX_RECORD_SECONDS = 30        # safety cap
+
+# Spoken acknowledgements while waiting for Claude API response
+ACKNOWLEDGEMENTS = [
+    "Let me think about that.",
+    "One moment.",
+    "Working on it.",
+    "Give me a second.",
+    "On it.",
+    "Let me look into that.",
+    "Hmm, let me see.",
+    "Just a moment.",
+]
 
 
 def load_models():
@@ -264,7 +277,7 @@ def main():
                 threading.Thread(target=claude_worker, daemon=True).start()
 
                 if not done_event.wait(timeout=1.0):
-                    speak(tts_voice, "Let me think about that.")
+                    speak(tts_voice, random.choice(ACKNOWLEDGEMENTS))
                     done_event.wait()
 
                 response = result_holder["response"]
