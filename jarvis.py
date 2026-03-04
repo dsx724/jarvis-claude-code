@@ -304,13 +304,13 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 error_logger = logging.getLogger("jarvis.error")
 error_logger.setLevel(logging.ERROR)
-_error_handler = logging.FileHandler(os.path.join(SCRIPT_DIR, "error.log"))
+_error_handler = logging.FileHandler(os.path.join(SCRIPT_DIR, "logs", "error.log"))
 _error_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 error_logger.addHandler(_error_handler)
 
 conversation_logger = logging.getLogger("jarvis.conversation")
 conversation_logger.setLevel(logging.INFO)
-_conv_handler = logging.FileHandler("conversation.log")
+_conv_handler = logging.FileHandler(os.path.join(SCRIPT_DIR, "logs", "conversation.log"))
 _conv_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 conversation_logger.addHandler(_conv_handler)
 
