@@ -284,6 +284,14 @@ def main():
 
                 print(f"Transcribed: {text}")
 
+                # Handle built-in commands without calling Claude API
+                text_lower = text.lower().strip().rstrip(".")
+                if text_lower in ("restart", "restart yourself", "restart jarvis",
+                                  "please restart", "reboot", "reboot yourself"):
+                    print("Built-in command: restart")
+                    speak(tts_voice, "Restarting now.")
+                    os._exit(42)
+
                 # Send to Claude, with a spoken filler if it takes too long
                 result_holder = {}
                 done_event = threading.Event()
