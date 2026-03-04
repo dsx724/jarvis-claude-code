@@ -327,7 +327,7 @@ def main():
 
         # Check for wake word activation
         for model_name, score in prediction.items():
-            if score > 0.5:
+            if score > 0.7:
                 print(f"\n*** Wake word detected! (threshold: {noise_tracker.speech_threshold:.0f}) ***")
 
                 # Record until silence
