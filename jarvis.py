@@ -501,6 +501,11 @@ def main():
         # Record until silence
         audio_bytes = record_until_silence(stream, vad_model)
 
+        # Reset wake model and flush mic buffer after every recording
+        # to prevent stale audio from re-triggering the wake word
+        stream.flush()
+        wake_model.reset()
+
         # Transcribe
         text = transcribe(whisper_model, audio_bytes)
         if not text:
