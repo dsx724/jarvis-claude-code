@@ -6,7 +6,7 @@ set -e
 # System dependencies
 echo "Installing system dependencies..."
 sudo apt-get update
-sudo apt-get install -y portaudio19-dev alsa-utils
+sudo apt-get install -y libpulse0 alsa-utils
 
 # Python venv
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,7 +20,7 @@ fi
 echo "Installing Python packages..."
 source venv/bin/activate
 pip install --upgrade pip
-pip install openwakeword faster-whisper pyaudio numpy piper-tts
+pip install openwakeword faster-whisper numpy piper-tts
 
 echo ""
 echo "Setup complete. Run with:"

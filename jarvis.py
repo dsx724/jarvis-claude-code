@@ -15,28 +15,73 @@ import threading
 import uuid
 import wave
 
-# Suppress ALSA and JACK warnings
-try:
-    _asound = ctypes.cdll.LoadLibrary("libasound.so.2")
-    _ERROR_HANDLER_TYPE = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_int,
-                                           ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p)
-    _error_handler = _ERROR_HANDLER_TYPE(lambda *_: None)  # prevent GC
-    _asound.snd_lib_error_set_handler(_error_handler)
-except OSError:
-    pass
-
 # Suppress onnxruntime CUDA warning
 import warnings
 warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
 
 import numpy as np
-import pyaudio
 
 # Audio config
 RATE = 16000
 CHANNELS = 1
 CHUNK = 1280  # 80ms at 16kHz - openwakeword expects this
-FORMAT = pyaudio.paInt16
+
+# PulseAudio simple API via ctypes
+_pulse_simple = ctypes.cdll.LoadLibrary("libpulse-simple.so.0")
+
+# pa_sample_format_t: PA_SAMPLE_S16LE = 3
+# pa_stream_direction_t: PA_STREAM_RECORD = 2
+class _PaSampleSpec(ctypes.Structure):
+    _fields_ = [
+        ("format", ctypes.c_int),
+        ("rate", ctypes.c_uint32),
+        ("channels", ctypes.c_uint8),
+    ]
+
+_pulse_simple.pa_simple_new.restype = ctypes.c_void_p
+_pulse_simple.pa_simple_new.argtypes = [
+    ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int,
+    ctypes.c_char_p, ctypes.c_char_p,
+    ctypes.POINTER(_PaSampleSpec), ctypes.c_void_p, ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_int),
+]
+_pulse_simple.pa_simple_read.restype = ctypes.c_int
+_pulse_simple.pa_simple_read.argtypes = [
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+    ctypes.POINTER(ctypes.c_int),
+]
+_pulse_simple.pa_simple_free.restype = None
+_pulse_simple.pa_simple_free.argtypes = [ctypes.c_void_p]
+
+
+class PulseRecorder:
+    """Record audio via PulseAudio simple API."""
+
+    def __init__(self, rate, channels, chunk):
+        self.chunk = chunk
+        self.frame_size = 2 * channels  # 16-bit samples
+        spec = _PaSampleSpec(format=3, rate=rate, channels=channels)
+        err = ctypes.c_int(0)
+        self._pa = _pulse_simple.pa_simple_new(
+            None, b"jarvis", 2, None, b"record",
+            ctypes.byref(spec), None, None, ctypes.byref(err),
+        )
+        if not self._pa:
+            raise RuntimeError(f"pa_simple_new failed: error {err.value}")
+
+    def read(self, n_frames, exception_on_overflow=False):
+        n_bytes = n_frames * self.frame_size
+        buf = ctypes.create_string_buffer(n_bytes)
+        err = ctypes.c_int(0)
+        ret = _pulse_simple.pa_simple_read(self._pa, buf, n_bytes, ctypes.byref(err))
+        if ret < 0:
+            raise RuntimeError(f"pa_simple_read failed: error {err.value}")
+        return buf.raw
+
+    def close(self):
+        if self._pa:
+            _pulse_simple.pa_simple_free(self._pa)
+            self._pa = None
 
 # Silence detection config
 NOISE_MULTIPLIER = 3.0         # speech threshold = ambient_rms * this
@@ -250,14 +295,7 @@ def send_to_claude(text, first_call=[True]):
 def main():
     wake_model, whisper_model, tts_voice = load_models()
 
-    audio = pyaudio.PyAudio()
-    stream = audio.open(
-        format=FORMAT,
-        channels=CHANNELS,
-        rate=RATE,
-        input=True,
-        frames_per_buffer=CHUNK,
-    )
+    stream = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
 
     noise_tracker = NoiseTracker()
 
