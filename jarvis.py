@@ -55,8 +55,14 @@ INITIAL_ACK_DELAY = _cfg.getfloat("timing", "initial_ack_delay")
 STILL_WORKING_INTERVAL = _cfg.getint("timing", "still_working_interval")
 ACKNOWLEDGEMENTS = _parse_message_list(_cfg.get("messages", "acknowledgements"))
 STILL_WORKING = _parse_message_list(_cfg.get("messages", "still_working"))
-STARTUP_MESSAGES = _parse_message_list(_cfg.get("messages", "startup"))
-SHUTDOWN_MESSAGES = _parse_message_list(_cfg.get("messages", "shutdown"))
+
+def _apply_wake_word_name(messages):
+    """Replace 'Jarvis' in config messages with the configured wake word name."""
+    wn = WAKE_WORD_NAME.capitalize()
+    return [re.sub(r'\bJarvis\b', wn, m) for m in messages]
+
+STARTUP_MESSAGES = _apply_wake_word_name(_parse_message_list(_cfg.get("messages", "startup")))
+SHUTDOWN_MESSAGES = _apply_wake_word_name(_parse_message_list(_cfg.get("messages", "shutdown")))
 
 # PulseAudio simple API via ctypes
 _pulse_simple = ctypes.cdll.LoadLibrary("libpulse-simple.so.0")
