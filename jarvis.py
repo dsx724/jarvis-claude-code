@@ -161,6 +161,25 @@ STILL_WORKING = [
 
 STILL_WORKING_INTERVAL = 5  # seconds between secondary acknowledgements
 
+# Startup and shutdown messages
+STARTUP_MESSAGES = [
+    "Jarvis is ready.",
+    "At your service.",
+    "Online and listening.",
+    "Ready when you are.",
+    "All systems go.",
+    "Standing by.",
+]
+
+SHUTDOWN_MESSAGES = [
+    "Shutting down. Goodbye.",
+    "Going offline. See you later.",
+    "Powering down. Take care.",
+    "Signing off.",
+    "Going to sleep. Goodbye.",
+    "Until next time.",
+]
+
 
 def load_models():
     """Load wake word and whisper models."""
@@ -335,7 +354,7 @@ def main():
 
     def shutdown(sig, frame):
         print("\nShutting down...")
-        speak(tts_voice, "Shutting down. Goodbye.")
+        speak(tts_voice, random.choice(SHUTDOWN_MESSAGES))
         os._exit(0)
 
     def restart(sig, frame):
@@ -346,7 +365,7 @@ def main():
     signal.signal(signal.SIGUSR1, restart)
 
     print("\n=== Jarvis is ready. Say 'Hey Jarvis' to activate. ===\n")
-    speak(tts_voice, "Jarvis is ready.")
+    speak(tts_voice, random.choice(STARTUP_MESSAGES))
 
     pending_text = None  # Set when wake word interrupts speech
 
