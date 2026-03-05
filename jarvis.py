@@ -47,6 +47,15 @@ def _detect_onnx_provider():
     return None
 
 _onnx_provider = _detect_onnx_provider()
+_OrigOnnxSession = None  # Set by _patch_onnx_providers to bypass monkey-patch
+
+def _openvino_gpu_available():
+    """Check if OpenVINO GPU device is available."""
+    try:
+        from openvino import Core
+        return "GPU" in Core().available_devices
+    except Exception:
+        return False
 
 def _patch_onnx_providers():
     """Monkey-patch onnxruntime.InferenceSession to inject OpenVINO provider.
@@ -59,7 +68,9 @@ def _patch_onnx_providers():
         return
 
     import onnxruntime as ort
+    global _OrigOnnxSession
     _OrigSession = ort.InferenceSession
+    _OrigOnnxSession = _OrigSession
 
     provider_name, device_type = _onnx_provider
     ov_provider = (provider_name, {"device_type": device_type})
@@ -170,6 +181,7 @@ STT_MODEL = _cfg.get("stt", "model")
 CLAUDE_TIMEOUT = _cfg.getint("claude", "timeout")
 TTS_ENGINE = _cfg.get("tts", "engine")
 TTS_VOICE = _cfg.get("tts", "voice")
+TTS_OPENVINO_DEVICE = _cfg.get("tts", "openvino_device", fallback="CPU").upper()
 INITIAL_ACK_DELAY = _cfg.getfloat("timing", "initial_ack_delay")
 STILL_WORKING_INTERVAL = _cfg.getint("timing", "still_working_interval")
 ACKNOWLEDGEMENTS = _parse_message_list(_cfg.get("messages", "acknowledgements"))
@@ -354,7 +366,31 @@ def load_models():
                     urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx", voice_path)
                     urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx.json", voice_config)
 
-                tts_voice = PiperVoice.load(voice_path)
+                if (TTS_OPENVINO_DEVICE == "GPU"
+                        and _onnx_provider is not None
+                        and _openvino_gpu_available()):
+                    import onnxruntime as ort
+                    from piper.config import PiperConfig
+                    print("Using OpenVINO GPU for TTS inference...")
+                    gpu_session = _OrigOnnxSession(
+                        str(voice_path),
+                        sess_options=ort.SessionOptions(),
+                        providers=["OpenVINOExecutionProvider"],
+                        provider_options=[{"device_type": "GPU"}],
+                    )
+                    with open(voice_path + ".json", "r", encoding="utf-8") as f:
+                        cfg_dict = json.load(f)
+                    tts_voice = PiperVoice(
+                        config=PiperConfig.from_dict(cfg_dict),
+                        session=gpu_session,
+                    )
+                    # Warmup: first GPU inference compiles the graph (~16s)
+                    print("Warming up GPU TTS (first inference)...")
+                    for _ in tts_voice.synthesize("warmup"):
+                        pass
+                    print("GPU TTS ready.")
+                else:
+                    tts_voice = PiperVoice.load(voice_path)
             elif TTS_ENGINE == "kokoro":
                 os.environ["HF_HUB_OFFLINE"] = "1"
                 from kokoro_onnx import Kokoro

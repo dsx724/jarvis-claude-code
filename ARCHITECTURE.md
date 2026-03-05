@@ -128,6 +128,7 @@ All tunable settings live in `config/jarvis.ini` (INI format), loaded directly b
 | STT_MODEL | medium.en | Faster-whisper model for STT |
 | TTS_ENGINE | piper | Text-to-speech engine (piper or kokoro) |
 | TTS_VOICE | en_US-lessac-medium | Voice model name (engine-specific) |
+| TTS_OPENVINO_DEVICE | CPU | OpenVINO device for TTS (CPU or GPU) |
 | INITIAL_ACK_DELAY | 10.0 | Seconds before first spoken filler |
 | QUEUE_FILE | logs/prompt_queue.json | Persistent prompt queue for rate limit retries |
 
@@ -144,6 +145,8 @@ Zero overhead when disabled (all debug paths are gated by per-component flags).
 
 ### ONNX Runtime Provider Auto-Detection
 At startup, `_detect_onnx_provider()` checks for accelerated ONNX Runtime execution providers (currently OpenVINO for Intel CPUs). If found, `_patch_onnx_providers()` monkey-patches `onnxruntime.InferenceSession` to transparently inject the accelerated provider into all ONNX-based components. Models that are incompatible with the provider (e.g., openwakeword and silero-vad use unsupported `If` control flow ops) silently fall back to `CPUExecutionProvider`. Currently accelerated: Piper TTS, Kokoro TTS. C++ error output from failed probes is suppressed via stderr redirection.
+
+For Piper TTS, the `TTS_OPENVINO_DEVICE` config option (default `CPU`) can be set to `GPU` to run TTS inference on an Intel integrated GPU via OpenVINO. GPU mode has a ~20s cold-start (graph compilation) but yields ~35% faster steady-state inference. The GPU session is created directly (bypassing the monkey-patch via `_OrigOnnxSession`) and warmed up at startup. `_openvino_gpu_available()` checks for GPU device presence via the OpenVINO Core API.
 
 ## Dependencies
 - **openwakeword**: Wake word detection (ONNX)
@@ -166,7 +169,7 @@ Safety gate between code changes and restart. Runs automatically in `jarvis.sh` 
 4. **Module import** — `importlib` loads `jarvis.py` (catches broken imports, missing deps).
 5. **Function signatures** — Verifies `load_models`, `record_until_silence`, `transcribe`, `is_self_echo`, `speak`, `send_to_claude`, `_always_on_listener`, `_strip_wake_prefix`, `main`, `parse_rate_limit`, queue functions exist with expected params.
 5b. **Listener state** — Verifies `_wake_detected`, `_listener_suppress`, `_listener_needs_reset` module attributes exist.
-5c. **ONNX provider detection** — Verifies `_detect_onnx_provider()` exists and returns valid format.
+5c. **ONNX provider detection** — Verifies `_detect_onnx_provider()` and `_openvino_gpu_available()` exist and return valid formats.
 6. **Echo detection** — Verifies `is_self_echo()` correctly identifies echoes and passes through unrelated text.
 7. **Rate limit parsing** — Verifies `parse_rate_limit()` extracts reset times from known formats and returns None for non-rate-limit text.
 8. **Queue operations** — Tests `queue_add`, `queue_pop`, `queue_list`, `queue_clear` using a temp file.

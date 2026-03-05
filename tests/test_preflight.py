@@ -61,7 +61,7 @@ def check_config_import():
         "PRE_SPEECH_TIMEOUT",
         "ACKNOWLEDGEMENTS", "STILL_WORKING", "STILL_WORKING_INTERVAL",
         "STARTUP_MESSAGES", "SHUTDOWN_MESSAGES",
-        "TTS_ENGINE", "TTS_VOICE", "STT_MODEL",
+        "TTS_ENGINE", "TTS_VOICE", "TTS_OPENVINO_DEVICE", "STT_MODEL",
         "WHISPER_HALLUCINATIONS", "ECHO_MEMORY_SECONDS", "ECHO_CANNED_THRESHOLD",
         "QUEUE_FILE",
     ]
@@ -102,6 +102,10 @@ def check_config_values():
         val = getattr(mod, name)
         if not isinstance(val, expected):
             errors.append(f"{name} should be {expected}, got {type(val)}")
+
+    # TTS_OPENVINO_DEVICE validation
+    if mod.TTS_OPENVINO_DEVICE not in ("CPU", "GPU"):
+        errors.append(f"TTS_OPENVINO_DEVICE={mod.TTS_OPENVINO_DEVICE} not in (CPU, GPU)")
 
     # String checks
     for name in ["TTS_ENGINE", "TTS_VOICE", "STT_MODEL", "WAKE_WORD_NAME"]:
@@ -418,6 +422,12 @@ def check_onnx_provider():
     # _onnx_provider should exist as module attribute
     if not hasattr(mod, "_onnx_provider"):
         raise AttributeError("_onnx_provider module attribute not found")
+    # _openvino_gpu_available should exist and return a bool
+    fn_gpu = getattr(mod, "_openvino_gpu_available", None)
+    if fn_gpu is None:
+        raise AttributeError("_openvino_gpu_available function not found")
+    if not isinstance(fn_gpu(), bool):
+        raise ValueError("_openvino_gpu_available should return bool")
 
 
 # ---------------------------------------------------------------------------
