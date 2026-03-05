@@ -1,0 +1,36 @@
+name: "Substring match causes false positive echo filter"
+# "Give me a second" is a canned acknowledgement. A user saying
+# "Give me a second opinion" contains it as a substring and within
+# the 2x length ratio, causing incorrect echo filtering.
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Give me a second opinion."
+    claude:
+      delay: 0.3
+      response: "Sure, I'd be happy to give you a second opinion."
+    expected:
+      # SHOULD reach Claude — user is making a real request
+      echo_filtered: false
+      claude_called: true
+
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "I am still working on it, can you help?"
+    claude:
+      delay: 0.3
+      response: "Of course, what do you need help with?"
+    expected:
+      # SHOULD reach Claude — user is reporting status, not echoing filler
+      echo_filtered: false
+      claude_called: true
+
+termination: exit

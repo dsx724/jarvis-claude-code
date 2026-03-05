@@ -1,0 +1,76 @@
+name: "Echo arrives after _recently_spoken overflows"
+# _recently_spoken only holds the last 3 entries. If 3+ messages are
+# spoken between a Claude response and its echo arriving, the original
+# response gets evicted and the echo won't be caught.
+time_scale: 1.0
+
+interactions:
+  # Interaction 0: Claude gives a distinctive response
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "What is the capital of France?"
+    claude:
+      delay: 0.3
+      response: "The capital of France is Paris, known for the Eiffel Tower."
+    expected:
+      claude_called: true
+
+  # Interactions 1-3: three more quick interactions that fill _recently_spoken
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "What about Germany?"
+    claude:
+      delay: 0.2
+      response: "The capital of Germany is Berlin."
+    expected:
+      claude_called: true
+
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "And Spain?"
+    claude:
+      delay: 0.2
+      response: "The capital of Spain is Madrid."
+    expected:
+      claude_called: true
+
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "And Italy?"
+    claude:
+      delay: 0.2
+      response: "The capital of Italy is Rome."
+    expected:
+      claude_called: true
+
+  # Now the echo from interaction 0 finally arrives (delayed reverb,
+  # or user is in a room with someone who repeated it).
+  # By now _recently_spoken = [Berlin response, Madrid response, Rome response]
+  # The Paris response has been evicted.
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "The capital of France is Paris, known for the Eiffel Tower."
+    claude:
+      delay: 0.3
+      response: ""
+    expected:
+      # SHOULD be filtered (it's an echo of a recent response)
+      # but _recently_spoken no longer contains it
+      echo_filtered: true
+
+termination: exit

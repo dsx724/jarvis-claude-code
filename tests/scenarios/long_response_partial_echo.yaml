@@ -1,0 +1,35 @@
+name: "Partial echo of long Claude response"
+# When Claude gives a long multi-sentence response, the mic may only
+# capture a fragment. A short fragment won't fuzzy-match the full text
+# well enough to be filtered, causing it to reach Claude as a new query.
+time_scale: 1.0
+
+interactions:
+  # Claude gives a long response
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 20
+    transcription: "Explain how hash maps work."
+    claude:
+      delay: 0.3
+      response: "A hash map is a data structure that stores key value pairs. It uses a hash function to compute an index into an array of buckets from which the desired value can be found. The average time complexity for lookups is constant time, making hash maps extremely efficient for large datasets."
+    expected:
+      claude_called: true
+
+  # Mic picks up just the last sentence fragment as echo
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "making hash maps extremely efficient for large datasets."
+    claude:
+      delay: 0.3
+      response: ""
+    expected:
+      # SHOULD be filtered as echo (it's a fragment of what Jarvis just said)
+      echo_filtered: true
+
+termination: exit

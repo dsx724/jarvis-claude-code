@@ -1,0 +1,37 @@
+name: "Whisper hallucination on background noise"
+# Whisper is well-known for producing phantom text on silence/noise:
+# "Thanks for watching!", "Thank you.", "Subscribe to my channel", etc.
+# These should ideally be filtered, not sent to Claude.
+time_scale: 1.0
+
+interactions:
+  # VAD detects speech (TV noise, background chatter, etc.) but Whisper
+  # hallucinates a common phantom string instead of real user speech.
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Thanks for watching!"
+    claude:
+      delay: 0.3
+      response: "You're welcome! Is there anything I can help with?"
+    expected:
+      # SHOULD be filtered (it's a hallucination, not real speech)
+      # but currently it passes through to Claude
+      claude_called: false
+
+  # Second hallucination variant
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Thank you."
+    claude:
+      delay: 0.3
+      response: "You're welcome!"
+    expected:
+      claude_called: false
+
+termination: exit

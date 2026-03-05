@@ -1,0 +1,51 @@
+name: "Claude error followed by retry"
+# When Claude returns an error, Jarvis speaks it aloud. The user should
+# be able to immediately ask a new question without the error text
+# interfering with echo filtering on the next interaction.
+time_scale: 1.0
+
+interactions:
+  # Claude returns an error
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Help me debug this function."
+    claude:
+      delay: 0.3
+      response: "Error: Claude Code timed out."
+    expected:
+      claude_called: true
+      spoken_response: "Error: Claude Code timed out."
+
+  # User retries with a different question — should work normally
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "What time is it?"
+    claude:
+      delay: 0.3
+      response: "It's about 3 PM."
+    expected:
+      claude_called: true
+      spoken_response: "It's about 3 PM."
+      echo_filtered: false
+
+  # Echo of the error message from interaction 0
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Error Claude Code timed out."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      # SHOULD be filtered — it's the error message Jarvis just spoke
+      echo_filtered: true
+
+termination: exit

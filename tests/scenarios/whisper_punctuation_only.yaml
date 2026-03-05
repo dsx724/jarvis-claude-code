@@ -1,0 +1,50 @@
+name: "Whisper returns only punctuation or whitespace"
+# On noisy or ambiguous audio, Whisper sometimes returns just punctuation
+# like ".", "...", ",", or whitespace. These are non-empty strings so they
+# pass the `if not text` check, but they contain no real speech content
+# and should not be sent to Claude.
+time_scale: 1.0
+
+interactions:
+  # Whisper returns just a period
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "."
+    claude:
+      delay: 0.1
+      response: "I didn't catch that."
+    expected:
+      # SHOULD be filtered (no real speech content)
+      claude_called: false
+
+  # Whisper returns ellipsis
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "..."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      claude_called: false
+
+  # Normal interaction after — system should recover
+  - wake_word:
+      silent_chunks: 5
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Hello, can you help me?"
+    claude:
+      delay: 0.3
+      response: "Of course! What do you need?"
+    expected:
+      claude_called: true
+      spoken_response: "Of course! What do you need?"
+
+termination: exit

@@ -1,0 +1,25 @@
+name: "Legitimate speech incorrectly matches canned message"
+# The echo filter uses substring matching: if a canned message is a substring
+# of the user's speech (within 2x length), it's treated as echo.
+# "let me think about that" is a canned ack, so "Let me think about that
+# for a moment" triggers the substring check and gets incorrectly filtered.
+time_scale: 1.0
+
+interactions:
+  # User genuinely says something that contains a canned message as substring
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 20
+    transcription: "Let me think about that for a moment."
+    claude:
+      delay: 0.3
+      response: "Take your time!"
+    expected:
+      # SHOULD reach Claude (this is real user speech, not an echo)
+      # but the substring match against "Let me think about that." filters it
+      echo_filtered: false
+      claude_called: true
+
+termination: exit
