@@ -1021,8 +1021,8 @@ def main():
     skip_wake_word = False
     # Keep a rolling buffer of recent audio chunks so we can capture speech
     # that starts immediately after (or overlapping with) the wake word.
-    # 8 chunks × 80ms = 640ms of pre-roll audio.
-    pre_roll_buf = deque(maxlen=8)
+    # 20 chunks × 80ms = 1600ms of pre-roll audio.
+    pre_roll_buf = deque(maxlen=20)
     _iter_count = 0
     while True:
         if not skip_wake_word:
@@ -1051,10 +1051,12 @@ def main():
             debug_log(DEBUG_RECORDING, f"=== iteration {_iter_count} START (wake word detected) ===")
             _iter_start = time.perf_counter()
             print("\n*** Wake word detected! ***")
-            # Keep only the last 4 chunks (~320ms) — recent enough to capture
-            # speech that starts right after (or overlapping) the wake word,
-            # but discards the earlier chunks that are purely wake word audio.
-            while len(pre_roll_buf) > 4:
+            # Keep the last 12 chunks (~960ms) of pre-roll. The wake word
+            # model has detection latency (~200-300ms after the word ends),
+            # so we need enough buffer to capture speech that starts right
+            # after the wake word. _strip_wake_prefix() handles any wake
+            # word text that ends up in the transcription.
+            while len(pre_roll_buf) > 12:
                 pre_roll_buf.popleft()
         else:
             _iter_count += 1
