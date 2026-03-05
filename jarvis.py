@@ -281,6 +281,7 @@ def load_models():
 
                 tts_voice = PiperVoice.load(voice_path)
             elif TTS_ENGINE == "kokoro":
+                os.environ["HF_HUB_OFFLINE"] = "1"
                 from kokoro_onnx import Kokoro
                 voice_dir = os.path.join(os.path.dirname(__file__), "voices")
                 model_path = os.path.join(voice_dir, "kokoro-v1.0.onnx")
@@ -418,7 +419,7 @@ def is_garbage_transcription(text):
     return _normalize(text) in WHISPER_HALLUCINATIONS
 
 
-def clean_text_for_speech(text):
+def clean_text_for_speech(text, keep_wake_word=False):
     """Strip markdown formatting that TTS would speak literally."""
     import re
     # Remove bold/italic markers (**, *, __, _)
@@ -431,7 +432,8 @@ def clean_text_for_speech(text):
     # Remove bullet point markers
     text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
     # Replace wake word so TTS doesn't trigger the wake word detector
-    text = re.sub(r'\b' + re.escape(WAKE_WORD_NAME) + r'\b', 'wake word', text, flags=re.IGNORECASE)
+    if not keep_wake_word:
+        text = re.sub(r'\b' + re.escape(WAKE_WORD_NAME) + r'\b', 'wake word', text, flags=re.IGNORECASE)
     return text.strip()
 
 
@@ -562,11 +564,12 @@ class KokoroTTS:
 _tts_lock = threading.Lock()
 
 
-def speak(tts_voice, text, interrupt_event=None):
+def speak(tts_voice, text, interrupt_event=None, keep_wake_word=False):
     """Speak text aloud using TTS, streaming via PulseAudio.
 
     If interrupt_event is provided (a threading.Event), playback stops
     early when the event is set (e.g. by wake word detection).
+    If keep_wake_word is True, the wake word is not replaced in the text.
     Returns True if interrupted, False otherwise.
     """
     if not text:
@@ -574,7 +577,7 @@ def speak(tts_voice, text, interrupt_event=None):
 
     debug_log(DEBUG_TTS, f"speak — started ({len(text)} chars): '{text[:60]}'")
     t_speak_start = time.perf_counter()
-    text = clean_text_for_speech(text)
+    text = clean_text_for_speech(text, keep_wake_word=keep_wake_word)
     player = PulsePlayer(rate=tts_voice.config.sample_rate)
     interrupted = False
     # Write audio in small sub-chunks so we can check for interrupts frequently.
@@ -775,11 +778,12 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGUSR1, restart)
 
-    def speak_and_clear(text, interruptible=False):
+    def speak_and_clear(text, interruptible=False, keep_wake_word=False):
         """Speak text, then flush mic buffer and reset wake model to prevent self-triggering.
 
         If interruptible=True, listens for the wake word during playback and
         stops early if detected. Returns True if interrupted, False otherwise.
+        If keep_wake_word=True, the wake word is not replaced in the spoken text.
         """
         # Track spoken text for echo detection (time-windowed)
         if text:
@@ -792,18 +796,19 @@ def main():
                 daemon=True,
             )
             listener_thread.start()
-            interrupted = speak(tts_voice, text, interrupt_event=interrupt_event)
+            interrupted = speak(tts_voice, text, interrupt_event=interrupt_event,
+                                keep_wake_word=keep_wake_word)
             interrupt_event.set()  # signal listener to stop if still running
             listener_thread.join(timeout=1.0)
         else:
-            interrupted = speak(tts_voice, text)
+            interrupted = speak(tts_voice, text, keep_wake_word=keep_wake_word)
         stream.flush()
         reset_wake_model(wake_model)
         return interrupted
 
     wn = WAKE_WORD_NAME.capitalize()
     print(f"\n=== {wn} is ready. Say 'Hey {wn}' to activate. ===\n")
-    speak_and_clear(random.choice(STARTUP_MESSAGES))
+    speak_and_clear(random.choice(STARTUP_MESSAGES), keep_wake_word=True)
 
     # Notify user if the previous commit was auto-reverted
     revert_marker = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".last_revert_reason")
