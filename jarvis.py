@@ -4,7 +4,7 @@
 import ctypes
 from collections import deque
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 import json
 import logging
@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 import wave
+import zoneinfo
 
 # Suppress onnxruntime CUDA warning
 import warnings
@@ -458,6 +459,9 @@ BUILTIN_RESPONSES = [
     "Reverted commit. Restarting now.",
     "Sorry, I couldn't find the git repository.",
     "Sorry, the revert failed.",
+    "The queue is empty.",
+    "Queue cleared.",
+    "All queued prompts have been processed.",
 ]
 
 # Pre-normalized set of all canned messages for fast echo lookup
@@ -537,6 +541,143 @@ def is_self_echo(transcribed):
     if _matches_any(norm_t, spoken_norms):
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Persistent prompt queue — survives restarts, auto-retries after rate limits
+# ---------------------------------------------------------------------------
+QUEUE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "prompt_queue.json")
+
+
+def load_queue():
+    """Load the prompt queue from disk. Returns [] on missing/corrupt file."""
+    try:
+        with open(QUEUE_FILE, "r") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return []
+
+
+def save_queue(queue):
+    """Atomically write the queue to disk."""
+    tmp = QUEUE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(queue, f)
+    os.replace(tmp, QUEUE_FILE)
+
+
+def queue_add(prompt, position=0):
+    """Insert a prompt into the queue (front by default). Returns updated queue."""
+    q = load_queue()
+    entry = {"prompt": prompt, "queued_at": datetime.now().isoformat()}
+    q.insert(position, entry)
+    save_queue(q)
+    return q
+
+
+def queue_pop():
+    """Remove and return the first queue entry, or None."""
+    q = load_queue()
+    if not q:
+        return None
+    entry = q.pop(0)
+    save_queue(q)
+    return entry
+
+
+def queue_list():
+    """Return the queue without modifying it."""
+    return load_queue()
+
+
+def queue_clear():
+    """Clear the queue file."""
+    save_queue([])
+
+
+# ---------------------------------------------------------------------------
+# Rate limit detection and scheduling
+# ---------------------------------------------------------------------------
+_RATE_LIMIT_RE = re.compile(
+    r"hit your limit.*resets?\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*\(([^)]+)\)",
+    re.IGNORECASE,
+)
+
+_queue_ready_event = threading.Event()
+_queue_timer = None
+
+
+def parse_rate_limit(response):
+    """Parse a rate limit message and return a tz-aware datetime for the reset time, or None."""
+    m = _RATE_LIMIT_RE.search(response)
+    if not m:
+        return None
+    time_str = m.group(1).strip().lower().replace(" ", "")
+    tz_name = m.group(2).strip()
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name)
+    except (KeyError, zoneinfo.ZoneInfoNotFoundError):
+        return None
+    now = datetime.now(tz)
+    for fmt in ("%I%p", "%I:%M%p"):
+        try:
+            parsed = datetime.strptime(time_str, fmt)
+            reset = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
+            if reset <= now:
+                reset += timedelta(days=1)
+            return reset
+        except ValueError:
+            continue
+    return None
+
+
+def schedule_queue_processing(reset_time):
+    """Schedule _queue_ready_event to fire at reset_time."""
+    global _queue_timer
+    if _queue_timer is not None:
+        _queue_timer.cancel()
+    if reset_time is None:
+        _queue_ready_event.set()
+        return
+    delay = (reset_time - datetime.now(reset_time.tzinfo)).total_seconds()
+    if delay <= 0:
+        _queue_ready_event.set()
+        return
+    _queue_timer = threading.Timer(delay, _queue_ready_event.set)
+    _queue_timer.daemon = True
+    _queue_timer.start()
+
+
+def _process_queue(tts_voice, speak_and_clear_fn):
+    """Drain the queue, sending each prompt to Claude and speaking the response."""
+    q = load_queue()
+    if not q:
+        return
+    speak_and_clear_fn(f"Processing {len(q)} queued prompt{'s' if len(q) != 1 else ''}.")
+    while True:
+        entry = queue_pop()
+        if entry is None:
+            break
+        prompt = entry["prompt"]
+        response = send_to_claude(prompt)
+        # Check if we hit rate limit again
+        reset_time = parse_rate_limit(response)
+        if reset_time is not None:
+            queue_add(prompt)
+            schedule_queue_processing(reset_time)
+            remaining = load_queue()
+            delay_min = max(1, int((reset_time - datetime.now(reset_time.tzinfo)).total_seconds() / 60))
+            speak_and_clear_fn(
+                f"Still rate-limited. I'll retry in about {delay_min} minutes. "
+                f"{len(remaining)} prompt{'s' if len(remaining) != 1 else ''} remaining in the queue."
+            )
+            return
+        conversation_logger.info("CLAUDE (queued): %s", response)
+        speak_and_clear_fn(response, interruptible=True)
+    speak_and_clear_fn("All queued prompts have been processed.")
 
 
 # ---------------------------------------------------------------------------
@@ -821,6 +962,12 @@ def main():
         except OSError:
             pass
 
+    # Check for queued prompts from a previous session
+    _startup_queue = load_queue()
+    if _startup_queue:
+        speak_and_clear(f"I have {len(_startup_queue)} queued prompt{'s' if len(_startup_queue) != 1 else ''} from before.")
+        _queue_ready_event.set()
+
     skip_wake_word = False
     # Keep a rolling buffer of recent audio chunks so we can capture speech
     # that starts immediately after (or overlapping with) the wake word.
@@ -844,6 +991,10 @@ def main():
                     activated = True
                     break
             if not activated:
+                # Process queued prompts when the rate limit timer fires
+                if _queue_ready_event.is_set():
+                    _queue_ready_event.clear()
+                    _process_queue(tts_voice, speak_and_clear)
                 continue
 
             _iter_count += 1
@@ -934,6 +1085,32 @@ def main():
             speak(tts_voice, f"Reverted commit {short_hash}. Restarting now.")
             os._exit(42)
 
+        if text_lower in ("queue", "show queue", "whats in the queue",
+                          "what's in the queue", "list queue", "pending prompts"):
+            print(f"Transcribed: {text}")
+            print("Built-in command: queue")
+            q = queue_list()
+            if not q:
+                speak_and_clear("The queue is empty.")
+            else:
+                parts = [f"There {'is' if len(q) == 1 else 'are'} {len(q)} prompt{'s' if len(q) != 1 else ''} in the queue."]
+                for i, entry in enumerate(q, 1):
+                    parts.append(f"Number {i}: {entry['prompt']}")
+                speak_and_clear(" ".join(parts))
+            continue
+
+        if text_lower in ("clear queue", "empty queue", "clear the queue"):
+            print(f"Transcribed: {text}")
+            print("Built-in command: clear queue")
+            global _queue_timer
+            queue_clear()
+            if _queue_timer is not None:
+                _queue_timer.cancel()
+                _queue_timer = None
+            _queue_ready_event.clear()
+            speak_and_clear("Queue cleared.")
+            continue
+
         # Filter out self-echo (mic picking up Jarvis's own speech)
         # If the same echo is repeated multiple times, it's likely intentional.
         global _last_echo_text, _echo_repeat_count
@@ -987,6 +1164,18 @@ def main():
         response = result_holder["response"]
         conversation_logger.info("CLAUDE: %s", response)
         print(f"\nClaude: {response}\n")
+
+        # Check for rate limit — queue the prompt and schedule retry
+        reset_time = parse_rate_limit(response)
+        if reset_time is not None:
+            q = queue_add(text)
+            schedule_queue_processing(reset_time)
+            delay_min = max(1, int((reset_time - datetime.now(reset_time.tzinfo)).total_seconds() / 60))
+            speak_and_clear(
+                f"You've been rate-limited. I've queued your prompt and will retry in about {delay_min} minutes. "
+                f"There {'is' if len(q) == 1 else 'are'} {len(q)} prompt{'s' if len(q) != 1 else ''} in the queue."
+            )
+            continue
 
         # Speak response (interruptible by wake word)
         with debug_timer(DEBUG_TTS, "speak response"):

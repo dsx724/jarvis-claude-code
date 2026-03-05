@@ -63,6 +63,7 @@ def check_config_import():
         "STARTUP_MESSAGES", "SHUTDOWN_MESSAGES",
         "TTS_ENGINE", "TTS_VOICE", "STT_MODEL",
         "WHISPER_HALLUCINATIONS", "ECHO_MEMORY_SECONDS", "ECHO_CANNED_THRESHOLD",
+        "QUEUE_FILE",
     ]
     missing = [name for name in expected if not hasattr(mod, name)]
     if missing:
@@ -196,6 +197,14 @@ def check_function_signatures():
         "listen_for_wake_word": ["wake_model", "interrupt_event"],
         "send_to_claude": ["text"],
         "main": [],
+        "parse_rate_limit": ["response"],
+        "load_queue": [],
+        "save_queue": ["queue"],
+        "queue_add": ["prompt"],
+        "queue_pop": [],
+        "queue_list": [],
+        "queue_clear": [],
+        "schedule_queue_processing": ["reset_time"],
     }
     errors = []
     for fn_name, params in expected.items():
@@ -288,7 +297,73 @@ def check_echo_detection():
 
 
 # ---------------------------------------------------------------------------
-# 8. Model loading
+# 8. Rate limit parsing
+# ---------------------------------------------------------------------------
+def check_rate_limit_parsing():
+    mod = check_module_import._module
+    from datetime import datetime as dt
+    # Known rate limit format should parse to a datetime
+    result = mod.parse_rate_limit("You've hit your limit · resets 9pm (America/New_York)")
+    assert result is not None, "parse_rate_limit returned None for valid input"
+    assert result.tzinfo is not None, "parsed time should be tz-aware"
+    # With minutes
+    result2 = mod.parse_rate_limit("You've hit your limit · resets 9:30pm (America/New_York)")
+    assert result2 is not None, "parse_rate_limit returned None for time with minutes"
+    assert result2.minute == 30, f"expected minute=30, got {result2.minute}"
+    # Non-rate-limit text should return None
+    assert mod.parse_rate_limit("Hello world") is None
+    assert mod.parse_rate_limit("The weather is nice") is None
+    # Edge: empty string
+    assert mod.parse_rate_limit("") is None
+
+
+# ---------------------------------------------------------------------------
+# 9. Queue operations
+# ---------------------------------------------------------------------------
+def check_queue_operations():
+    import tempfile
+    mod = check_module_import._module
+    # Use a temp file to avoid touching the real queue
+    original = mod.QUEUE_FILE
+    try:
+        tmp = tempfile.mktemp(suffix=".json")
+        mod.QUEUE_FILE = tmp
+
+        # Empty queue
+        assert mod.load_queue() == []
+        assert mod.queue_list() == []
+        assert mod.queue_pop() is None
+
+        # Add items
+        q = mod.queue_add("prompt one")
+        assert len(q) == 1
+        assert q[0]["prompt"] == "prompt one"
+
+        q = mod.queue_add("prompt two")
+        assert len(q) == 2
+        assert q[0]["prompt"] == "prompt two"  # inserted at front
+
+        # List
+        listed = mod.queue_list()
+        assert len(listed) == 2
+
+        # Pop
+        entry = mod.queue_pop()
+        assert entry["prompt"] == "prompt two"
+        assert len(mod.queue_list()) == 1
+
+        # Clear
+        mod.queue_clear()
+        assert mod.queue_list() == []
+
+    finally:
+        mod.QUEUE_FILE = original
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+# ---------------------------------------------------------------------------
+# 10. Model loading
 # ---------------------------------------------------------------------------
 def check_model_loading():
     mod = check_module_import._module
@@ -316,6 +391,8 @@ if __name__ == "__main__":
     check("Function signatures", check_function_signatures)
     check("Text cleaning for TTS", check_text_cleaning)
     check("Echo detection", check_echo_detection)
+    check("Rate limit parsing", check_rate_limit_parsing)
+    check("Queue operations", check_queue_operations)
     check("Model loading", check_model_loading)
 
     print(f"\nResults: {passed} passed, {failed} failed")

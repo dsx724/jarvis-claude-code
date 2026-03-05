@@ -1,0 +1,18 @@
+name: "Rate limit queues prompt"
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "What is the weather today?"
+    claude:
+      delay: 0.1
+      response: "You've hit your limit · resets 9pm (America/New_York)"
+      tool_events: []
+    expected:
+      claude_called: true
+
+termination: exit

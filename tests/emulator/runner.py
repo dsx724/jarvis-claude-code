@@ -40,6 +40,13 @@ def _reset_module_state(jarvis):
     jarvis._canned_normalized = None
     jarvis._last_echo_text = None
     jarvis._echo_repeat_count = 0
+    # Reset queue state
+    jarvis._queue_ready_event.clear()
+    if jarvis._queue_timer is not None:
+        jarvis._queue_timer.cancel()
+        jarvis._queue_timer = None
+    # Clear queue file so scenarios start fresh
+    jarvis.queue_clear()
     # Reset send_to_claude's mutable default (first_call flag)
     sig = jarvis.send_to_claude.__code__
     for const in sig.co_consts:
@@ -273,5 +280,8 @@ def _is_builtin_command(text):
         "revert", "revert yourself", "revert the last change",
         "undo the last change", "roll back", "rollback",
         "please restart",
+        "queue", "show queue", "whats in the queue", "what's in the queue",
+        "list queue", "pending prompts",
+        "clear queue", "empty queue", "clear the queue",
     )
     return lower in builtin_phrases

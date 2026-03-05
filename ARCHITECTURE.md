@@ -61,16 +61,29 @@ Sends transcribed text to `claude` CLI via `subprocess.Popen` with `--output-for
 Handled locally without calling Claude:
 - **restart** / **reboot**: Exits with code 42 (systemd restarts).
 - **revert**: Runs `git revert HEAD` and restarts.
+- **queue** / **show queue** / **list queue** / **pending prompts**: Lists queued prompts.
+- **clear queue** / **empty queue**: Clears the queue and cancels any pending retry timer.
+
+### Persistent Prompt Queue
+When Claude Code returns a rate limit message, the prompt is saved to `logs/prompt_queue.json` and a timer is set to auto-retry when the limit resets.
+
+- **Queue file**: `logs/prompt_queue.json` — JSON list of `{"prompt": "...", "queued_at": "..."}` objects.
+- **Rate limit detection**: `parse_rate_limit()` extracts the reset time from messages matching "hit your limit...resets Xpm (timezone)".
+- **Timer/scheduling**: `schedule_queue_processing()` sets a `threading.Timer` that fires `_queue_ready_event` at the reset time. The main wake word idle loop checks this event and calls `_process_queue()` when ready.
+- **Startup recovery**: On startup, if the queue file is non-empty, Jarvis announces the count and immediately attempts to process them (if still rate-limited, it re-queues with a new timer).
+- **Queue operations**: `load_queue()`, `save_queue()`, `queue_add()`, `queue_pop()`, `queue_list()`, `queue_clear()` — all disk-backed, no in-memory cache.
 
 ## Main Loop Flow
 1. Read audio chunk → feed to wake word model.
+1b. If `_queue_ready_event` is set (rate limit expired), process queued prompts.
 2. On activation → `record_until_silence()` with Silero VAD.
 3. Transcribe with faster-whisper.
 4. Filter self-echo (discard if transcription matches recently spoken text).
-5. Check for built-in commands.
-5. Send to Claude Code (with timeout-based spoken fillers).
-6. Speak response (blocking).
-7. Reset wake word model state, loop back.
+5. Check for built-in commands (restart, revert, queue, clear queue).
+6. Send to Claude Code (with timeout-based spoken fillers).
+6b. If response is a rate limit → queue prompt, schedule retry timer, skip speech.
+7. Speak response (blocking).
+8. Reset wake word model state, loop back.
 
 ## Configuration
 All tunable settings live in `config/jarvis.ini` (INI format), loaded directly by `jarvis.py` at startup. Key values:
@@ -96,6 +109,7 @@ All tunable settings live in `config/jarvis.ini` (INI format), loaded directly b
 | TTS_ENGINE | piper | Text-to-speech engine (piper or kokoro) |
 | TTS_VOICE | en_US-lessac-medium | Voice model name (engine-specific) |
 | INITIAL_ACK_DELAY | 10.0 | Seconds before first spoken filler |
+| QUEUE_FILE | logs/prompt_queue.json | Persistent prompt queue for rate limit retries |
 
 ### Debug / Profiling Mode
 Per-component debug flags in `[debug]` section of `jarvis.ini`. Each can be independently set to `true` to print timestamped `[DEBUG +<elapsed>s]` messages for that component:
@@ -126,9 +140,11 @@ Safety gate between code changes and restart. Runs automatically in `jarvis.sh` 
 2. **Config import** — Mirrors the exact import statement from `jarvis.py`.
 3. **Config value validation** — Type checks, range checks (e.g., `0 < VAD_THRESHOLD <= 1.0`), non-empty message lists, TTS engine/voice validation.
 4. **Module import** — `importlib` loads `jarvis.py` (catches broken imports, missing deps).
-5. **Function signatures** — Verifies `load_models`, `record_until_silence`, `transcribe`, `is_self_echo`, `speak`, `send_to_claude`, `main` exist with expected params.
+5. **Function signatures** — Verifies `load_models`, `record_until_silence`, `transcribe`, `is_self_echo`, `speak`, `send_to_claude`, `main`, `parse_rate_limit`, queue functions exist with expected params.
 6. **Echo detection** — Verifies `is_self_echo()` correctly identifies echoes and passes through unrelated text.
-7. **Model loading** — Loads all 4 models (wake word, whisper, VAD, TTS).
+7. **Rate limit parsing** — Verifies `parse_rate_limit()` extracts reset times from known formats and returns None for non-rate-limit text.
+8. **Queue operations** — Tests `queue_add`, `queue_pop`, `queue_list`, `queue_clear` using a temp file.
+9. **Model loading** — Loads all 4 models (wake word, whisper, VAD, TTS).
 
 Exits 0 on pass, 1 on fail. All checks run (no early exit) to give a complete picture.
 
