@@ -738,6 +738,7 @@ def main():
         os._exit(42)
 
     signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGUSR1, restart)
 
     def speak_and_clear(text, interruptible=False):
