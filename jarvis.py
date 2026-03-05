@@ -766,7 +766,7 @@ def main():
 
     def shutdown(sig, frame):
         print("\nShutting down...")
-        speak(tts_voice, random.choice(SHUTDOWN_MESSAGES))
+        speak(tts_voice, random.choice(SHUTDOWN_MESSAGES), keep_wake_word=True)
         os._exit(0)
 
     def restart(sig, frame):
