@@ -1095,7 +1095,11 @@ def main():
     # Check for queued prompts from a previous session
     _startup_queue = load_queue()
     if _startup_queue:
-        speak_and_clear(f"I have {len(_startup_queue)} queued prompt{'s' if len(_startup_queue) != 1 else ''} from before.")
+        n = len(_startup_queue)
+        print(f"\nQueued prompts ({n}):")
+        for i, entry in enumerate(_startup_queue, 1):
+            print(f"  {i}. {entry['prompt']}")
+        speak_and_clear(f"I have {n} queued prompt{'s' if n != 1 else ''} from before.")
         _queue_ready_event.set()
 
     skip_wake_word = False
