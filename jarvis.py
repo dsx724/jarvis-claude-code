@@ -423,18 +423,24 @@ def is_garbage_transcription(text):
 def clean_text_for_speech(text, keep_wake_word=False):
     """Strip markdown formatting that TTS would speak literally."""
     import re
+    # Remove fenced code blocks (```...```) — replace with brief mention
+    text = re.sub(r'```[^\n]*\n.*?```', ' (code omitted) ', text, flags=re.DOTALL)
+    # Remove inline code WITH content (`...`) — replace with brief mention
+    text = re.sub(r'`[^`]+`', ' (code) ', text)
     # Remove bold/italic markers (**, *, __, _)
     text = re.sub(r'\*{1,3}', '', text)
     text = re.sub(r'_{1,3}', '', text)
     # Remove markdown headers (# ## ###)
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    # Remove inline code backticks
-    text = re.sub(r'`{1,3}', '', text)
+    # Remove any remaining backticks
+    text = re.sub(r'`', '', text)
     # Remove bullet point markers
     text = re.sub(r'^\s*[-*+]\s+', '', text, flags=re.MULTILINE)
     # Replace wake word so TTS doesn't trigger the wake word detector
     if not keep_wake_word:
         text = re.sub(r'\b' + re.escape(WAKE_WORD_NAME) + r'\b', 'wake word', text, flags=re.IGNORECASE)
+    # Collapse excess whitespace from removals
+    text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
 

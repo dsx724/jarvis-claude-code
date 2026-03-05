@@ -250,8 +250,12 @@ def check_text_cleaning():
     # Asterisks (bold/italic) should be stripped
     assert fn("**bold**") == "bold", f"got {fn('**bold**')}"
     assert fn("*italic*") == "italic", f"got {fn('*italic*')}"
-    # Backticks should be stripped
-    assert fn("`code`") == "code", f"got {fn('`code`')}"
+    # Inline code should be replaced with "(code)"
+    assert fn("`some_var`") == "(code)", f"got {fn('`some_var`')}"
+    # Fenced code blocks should be replaced with "(code omitted)"
+    result = fn("Here:\n```python\ndef foo():\n    pass\n```\nDone.")
+    assert "(code omitted)" in result, f"got {result}"
+    assert "def foo" not in result, f"code content leaked: {result}"
     # Headers should be stripped
     assert fn("## Header") == "Header", f"got {fn('## Header')}"
     # Plain text should pass through
