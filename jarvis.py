@@ -377,6 +377,34 @@ def transcribe(whisper_model, audio_bytes):
         os.unlink(tmp_path)
 
 
+# Known Whisper hallucination strings — phantom text produced on silence/noise.
+# These are well-documented artifacts from Whisper's training data (YouTube).
+WHISPER_HALLUCINATIONS = {
+    "thanks for watching",
+    "thank you for watching",
+    "thank you",
+    "thanks for listening",
+    "thank you for listening",
+    "please subscribe",
+    "like and subscribe",
+    "subscribe",
+    "subscribe to my channel",
+    "see you next time",
+    "see you in the next video",
+    "see you in the next one",
+    "the end",
+}
+
+
+def is_garbage_transcription(text):
+    """Filter out Whisper hallucinations and punctuation-only output."""
+    # Strip all non-alphanumeric characters — reject if nothing remains
+    if not re.sub(r'[^a-zA-Z0-9]', '', text):
+        return True
+    # Check against known Whisper hallucination patterns
+    return _normalize(text) in WHISPER_HALLUCINATIONS
+
+
 def clean_text_for_speech(text):
     """Strip markdown formatting that TTS would speak literally."""
     import re
@@ -394,9 +422,14 @@ def clean_text_for_speech(text):
     return text.strip()
 
 
-# Track recently spoken text for echo detection
+# Track recently spoken text for echo detection — list of (timestamp, text) tuples.
+# Time-based window instead of fixed count so rapid interactions don't evict entries.
 _recently_spoken = []
+ECHO_MEMORY_SECONDS = 60
 ECHO_SIMILARITY_THRESHOLD = 0.7
+# Canned messages (acks, fillers) are short common phrases prone to matching
+# legitimate user speech at the standard threshold, so use a stricter one.
+ECHO_CANNED_THRESHOLD = 0.85
 # If the same echo-like text is heard this many times consecutively,
 # treat it as intentional speech rather than an echo.
 ECHO_REPEAT_THRESHOLD = 2
@@ -435,18 +468,22 @@ def _get_canned_normalized():
     return _canned_normalized
 
 
-def _matches_any(norm_t, candidates):
+def _matches_any(norm_t, candidates, threshold=ECHO_SIMILARITY_THRESHOLD):
     """Check if normalized text matches any candidate via substring or fuzzy match."""
     for norm_s in candidates:
         if not norm_s:
             continue
-        # Substring match only when the lengths are comparable (within 2x).
-        # This prevents short canned messages from matching inside long user speech.
+        # Substring match: only when user text is a shorter/equal version of spoken
+        # text (norm_t in norm_s). We intentionally do NOT check the reverse
+        # (norm_s in norm_t) because that catches legitimate user speech that
+        # happens to contain a canned phrase (e.g. "Give me a second opinion"
+        # would match the canned "Give me a second").
+        # Min ratio 0.4 allows partial echo fragments of long sentences.
         len_ratio = len(norm_t) / len(norm_s) if norm_s else 0
-        if 0.5 <= len_ratio <= 2.0 and (norm_t in norm_s or norm_s in norm_t):
+        if 0.4 <= len_ratio <= 2.0 and norm_t in norm_s:
             return True
         ratio = SequenceMatcher(None, norm_t, norm_s).ratio()
-        if ratio >= ECHO_SIMILARITY_THRESHOLD:
+        if ratio >= threshold:
             return True
     return False
 
@@ -456,11 +493,26 @@ def is_self_echo(transcribed):
     norm_t = _normalize(transcribed)
     if not norm_t:
         return False
-    # Check against all canned messages (acknowledgements, fillers, etc.)
-    if _matches_any(norm_t, _get_canned_normalized()):
+    # Check against canned messages with stricter threshold — canned phrases
+    # are short and common, so the standard threshold causes false positives
+    # (e.g. "Give me a second opinion" matching "Give me a second").
+    if _matches_any(norm_t, _get_canned_normalized(), threshold=ECHO_CANNED_THRESHOLD):
         return True
-    # Check against recently spoken dynamic text (Claude responses)
-    if _matches_any(norm_t, [_normalize(s) for s in _recently_spoken]):
+    # Check against recently spoken dynamic text (time-windowed).
+    # Also split long responses into sentences so partial echoes
+    # (e.g. last sentence of a multi-sentence response) are caught.
+    now = time.time()
+    _recently_spoken[:] = [(ts, t) for ts, t in _recently_spoken
+                           if now - ts <= ECHO_MEMORY_SECONDS]
+    spoken_norms = []
+    for _ts, text in _recently_spoken:
+        spoken_norms.append(_normalize(text))
+        # Split into sentences for fragment matching on long responses
+        for sentence in re.split(r'[.!?]+', text):
+            sentence = sentence.strip()
+            if len(sentence) > 3:  # skip trivially short fragments
+                spoken_norms.append(_normalize(sentence))
+    if _matches_any(norm_t, spoken_norms):
         return True
     return False
 
@@ -687,11 +739,9 @@ def main():
         If interruptible=True, listens for the wake word during playback and
         stops early if detected. Returns True if interrupted, False otherwise.
         """
-        # Track spoken text for echo detection (keep last 3)
+        # Track spoken text for echo detection (time-windowed)
         if text:
-            _recently_spoken.append(text)
-            if len(_recently_spoken) > 3:
-                _recently_spoken.pop(0)
+            _recently_spoken.append((time.time(), text))
         if interruptible:
             interrupt_event = threading.Event()
             listener_thread = threading.Thread(
@@ -779,6 +829,10 @@ def main():
             text = transcribe(whisper_model, audio_bytes)
         if not text:
             print("(no speech detected)")
+            continue
+        if is_garbage_transcription(text):
+            debug_log(DEBUG_TRANSCRIPTION, f"filtered garbage transcription: '{text}'")
+            print(f"(filtered garbage: {text})")
             continue
 
         # Handle built-in commands before echo filtering — keywords like

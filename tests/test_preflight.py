@@ -62,6 +62,7 @@ def check_config_import():
         "ACKNOWLEDGEMENTS", "STILL_WORKING", "STILL_WORKING_INTERVAL",
         "STARTUP_MESSAGES", "SHUTDOWN_MESSAGES",
         "TTS_ENGINE", "TTS_VOICE", "STT_MODEL",
+        "WHISPER_HALLUCINATIONS", "ECHO_MEMORY_SECONDS", "ECHO_CANNED_THRESHOLD",
     ]
     missing = [name for name in expected if not hasattr(mod, name)]
     if missing:
@@ -178,6 +179,7 @@ def check_function_signatures():
         "record_until_silence": ["stream", "vad_model"],
         "transcribe": ["whisper_model", "audio_bytes"],
         "clean_text_for_speech": ["text"],
+        "is_garbage_transcription": ["text"],
         "is_self_echo": ["transcribed"],
         "speak": ["tts_voice", "text"],
         "listen_for_wake_word": ["wake_model", "interrupt_event"],
@@ -222,6 +224,7 @@ def check_text_cleaning():
 # 7. Echo detection
 # ---------------------------------------------------------------------------
 def check_echo_detection():
+    import time as _time
     mod = check_module_import._module
     # Clear state
     mod._recently_spoken.clear()
@@ -238,11 +241,22 @@ def check_echo_detection():
     # Unrelated text should not match
     assert not mod.is_self_echo("turn on the lights")
     assert not mod.is_self_echo("what is the weather today")
-    # Dynamic spoken text (Claude responses)
-    mod._recently_spoken.append("The answer is forty two.")
+    # Dynamic spoken text (Claude responses) — uses (timestamp, text) tuples
+    mod._recently_spoken.append((_time.time(), "The answer is forty two."))
     assert mod.is_self_echo("the answer is forty two")
     assert mod.is_self_echo("answer is forty two")
     assert not mod.is_self_echo("what is the meaning of life")
+    # Sentence-level fragment matching for long responses
+    mod._recently_spoken.append((_time.time(),
+        "A hash map stores key value pairs. It uses a hash function for constant time lookups."))
+    assert mod.is_self_echo("It uses a hash function for constant time lookups")
+    # Garbage transcription filtering
+    assert mod.is_garbage_transcription(".")
+    assert mod.is_garbage_transcription("...")
+    assert mod.is_garbage_transcription("Thanks for watching!")
+    assert mod.is_garbage_transcription("thank you")
+    assert not mod.is_garbage_transcription("What time is it?")
+    assert not mod.is_garbage_transcription("hello")
     # Clean up
     mod._recently_spoken.clear()
 
