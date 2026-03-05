@@ -810,10 +810,10 @@ def main():
             debug_log(DEBUG_RECORDING, f"=== iteration {_iter_count} START (wake word detected) ===")
             _iter_start = time.perf_counter()
             print("\n*** Wake word detected! ***")
-            # Keep only the last 2 chunks (~160ms) — recent enough to capture
-            # speech that starts right after the wake word, but discards the
-            # earlier chunks that contain the wake word itself.
-            while len(pre_roll_buf) > 2:
+            # Keep only the last 4 chunks (~320ms) — recent enough to capture
+            # speech that starts right after (or overlapping) the wake word,
+            # but discards the earlier chunks that are purely wake word audio.
+            while len(pre_roll_buf) > 4:
                 pre_roll_buf.popleft()
         else:
             _iter_count += 1
@@ -841,6 +841,21 @@ def main():
             debug_log(DEBUG_TRANSCRIPTION, f"filtered garbage transcription: '{text}'")
             print(f"(filtered garbage: {text})")
             continue
+
+        # Strip wake word prefix if the mic captured it in pre-roll audio
+        _wake_prefixes = [
+            f"hey {WAKE_WORD_NAME.lower()} ",
+            f"hey {WAKE_WORD_NAME.lower()}, ",
+            f"{WAKE_WORD_NAME.lower()} ",
+            f"{WAKE_WORD_NAME.lower()}, ",
+        ]
+        text_stripped = text
+        for prefix in _wake_prefixes:
+            if text_stripped.lower().startswith(prefix):
+                text_stripped = text_stripped[len(prefix):].strip()
+                break
+        if text_stripped:
+            text = text_stripped
 
         # Handle built-in commands before echo filtering — keywords like
         # "restart" are substrings of canned responses ("Restarting now")

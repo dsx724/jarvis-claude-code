@@ -1,0 +1,20 @@
+name: "Fast question immediately after wake word"
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Hey Jarvis, what time is it?"
+    claude:
+      delay: 0.1
+      response: "It's about 3 PM."
+    expected:
+      claude_called: true
+      claude_prompt_contains: "what time is it"
+      claude_prompt_excludes: "jarvis"
+      tts_played: true
+
+termination: silence
