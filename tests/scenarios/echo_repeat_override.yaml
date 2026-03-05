@@ -1,0 +1,47 @@
+name: "Echo repeated enough times treated as intentional"
+time_scale: 1.0
+
+interactions:
+  # First: Claude says something
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Say hello world."
+    claude:
+      delay: 0.3
+      response: "Hello world."
+      tool_events: []
+    expected:
+      echo_filtered: false
+
+  # Second: echo — filtered
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Hello world."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+  # Third: same echo again — now treated as intentional (repeat threshold = 2)
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Hello world."
+    claude:
+      delay: 0.3
+      response: "Hello to you too!"
+      tool_events: []
+    expected:
+      echo_filtered: false
+      claude_called: true
+
+termination: exit

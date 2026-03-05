@@ -1,0 +1,33 @@
+name: "Echo detection filters self-echo"
+time_scale: 1.0
+
+interactions:
+  # First interaction: normal question, Claude responds
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Tell me a joke."
+    claude:
+      delay: 0.3
+      response: "Why did the chicken cross the road? To get to the other side."
+      tool_events: []
+    expected:
+      spoken_response: "Why did the chicken cross the road? To get to the other side."
+      echo_filtered: false
+
+  # Second interaction: mic picks up the response as echo
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Why did the chicken cross the road? To get to the other side."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+termination: exit

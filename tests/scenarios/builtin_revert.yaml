@@ -1,0 +1,18 @@
+name: "Built-in revert command"
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Revert."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      claude_called: false
+      exit_code: 42
+
+termination: exit

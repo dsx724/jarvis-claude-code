@@ -1,0 +1,33 @@
+name: "Speech detected but whisper returns empty"
+time_scale: 1.0
+
+interactions:
+  # Speech chunks are generated but transcription is empty
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: ""
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      claude_called: false
+
+  # Normal interaction after empty transcription
+  - wake_word:
+      silent_chunks: 5
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Hello there."
+    claude:
+      delay: 0.3
+      response: "Hi! How can I help?"
+      tool_events: []
+    expected:
+      claude_called: true
+      spoken_response: "Hi! How can I help?"
+
+termination: exit

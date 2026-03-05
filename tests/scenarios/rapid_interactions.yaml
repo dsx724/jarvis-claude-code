@@ -1,0 +1,47 @@
+name: "Multiple rapid interactions testing state cleanup"
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 2
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "First question."
+    claude:
+      delay: 0.2
+      response: "First answer."
+      tool_events: []
+    expected:
+      claude_called: true
+      spoken_response: "First answer."
+
+  - wake_word:
+      silent_chunks: 2
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Second question."
+    claude:
+      delay: 0.2
+      response: "Second answer."
+      tool_events: []
+    expected:
+      claude_called: true
+      spoken_response: "Second answer."
+
+  - wake_word:
+      silent_chunks: 2
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Third question."
+    claude:
+      delay: 0.2
+      response: "Third answer."
+      tool_events: []
+    expected:
+      claude_called: true
+      spoken_response: "Third answer."
+
+termination: exit

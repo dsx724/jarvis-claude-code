@@ -12,7 +12,7 @@ import os
 import py_compile
 import sys
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 passed = 0
 failed = 0
 

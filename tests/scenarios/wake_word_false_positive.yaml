@@ -1,0 +1,33 @@
+name: "Wake word fires but no speech within timeout"
+time_scale: 1.0
+
+interactions:
+  # Wake word triggers, but no speech is detected (0 speech chunks)
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 0
+    transcription: ""
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      claude_called: false
+
+  # Follow-up normal interaction to verify recovery
+  - wake_word:
+      silent_chunks: 5
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 20
+    transcription: "What is the weather?"
+    claude:
+      delay: 0.3
+      response: "I can't check the weather right now."
+      tool_events: []
+    expected:
+      claude_called: true
+      spoken_response: "I can't check the weather right now."
+
+termination: exit

@@ -1,0 +1,36 @@
+name: "Wake word interrupts TTS playback"
+time_scale: 1.0
+
+interactions:
+  # Normal interaction with long response — will be interrupted
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Tell me a long story."
+    claude:
+      delay: 0.3
+      response: "Once upon a time in a land far far away there lived a very wise old wizard."
+      tool_events: []
+    _interrupt_wake: true
+    expected:
+      claude_called: true
+      interrupted: true
+
+  # The interrupt should lead to recording immediately
+  - wake_word:
+      silent_chunks: 0
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Never mind, what time is it?"
+    claude:
+      delay: 0.3
+      response: "It's about noon."
+      tool_events: []
+    expected:
+      claude_called: true
+      spoken_response: "It's about noon."
+
+termination: exit

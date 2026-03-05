@@ -1,0 +1,26 @@
+name: "Slow Claude response triggers filler messages"
+time_scale: 0.01
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Write a complex function for me."
+    claude:
+      delay: 25.0
+      response: "Here is the function you requested."
+      tool_events:
+        - name: "Read"
+          input:
+            file_path: "example.py"
+        - name: "Edit"
+          input:
+            file_path: "example.py"
+    expected:
+      spoken_response: "Here is the function you requested."
+      claude_called: true
+      min_filler_count: 1
+
+termination: exit

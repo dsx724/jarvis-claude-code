@@ -9,7 +9,10 @@ Voice assistant that listens for a wake word, records speech, transcribes it, se
 - `agents/main/CLAUDE.md` — System prompt for Claude Code sessions.
 - `logs/` — Runtime logs (gitignored): `error.log`, `conversation.log`.
 - `voices/` — Piper TTS voice models (downloaded on first run).
-- `test_preflight.py` — Pre-restart validation checks (safety gate).
+- `tests/test_preflight.py` — Pre-restart validation checks (safety gate).
+- `tests/test_emulator.py` — Emulation testing CLI (runs YAML scenarios through real Jarvis logic).
+- `tests/emulator/` — Mock classes, scenario driver, and runner for emulation tests.
+- `tests/scenarios/` — YAML scenario definitions for emulation testing.
 - `jarvis.sh` — Launcher script with auto-restart on exit code 42 and preflight gate.
 - `jarvis.service` — systemd unit file.
 
@@ -113,7 +116,7 @@ Zero overhead when disabled (all debug paths are gated by per-component flags).
 - **numpy**: Audio array processing
 - **torch**: Tensor ops for Silero VAD
 
-## Preflight Validation (`test_preflight.py`)
+## Preflight Validation (`tests/test_preflight.py`)
 
 Safety gate between code changes and restart. Runs automatically in `jarvis.sh` after exit code 42, before spawning a new Jarvis process.
 
@@ -130,11 +133,46 @@ Exits 0 on pass, 1 on fail. All checks run (no early exit) to give a complete pi
 
 ### Auto-revert flow (in `jarvis.sh`)
 1. Jarvis exits with code 42 (restart requested).
-2. `test_preflight.py` is syntax-checked first, then run with a 120s timeout.
+2. `tests/test_preflight.py` is syntax-checked first, then run with a 120s timeout.
 3. If preflight passes → restart normally.
 4. If preflight fails → `git revert --no-edit HEAD`.
    - If revert succeeds, re-run preflight and restart.
    - If revert fails, fallback: `git checkout HEAD~1 -- jarvis.py config/jarvis.ini`.
+
+## Emulation Testing (`tests/test_emulator.py`)
+
+Replays synthetic interactions through the real Jarvis logic without hardware dependencies. Scenarios are defined as YAML files that script what each mock returns.
+
+### How it works
+- Imports `jarvis.py` and monkey-patches I/O classes at module boundaries (PulseRecorder, PulsePlayer, load_models, subprocess.Popen, subprocess.run, os._exit).
+- `ScenarioDriver` loads a YAML file and coordinates mock behavior — each mock reads its scripted data from the current interaction.
+- `jarvis.main()` runs with real logic (echo filtering, VAD silence detection, threading) against mocked I/O.
+- When the scenario is exhausted, `MockPulseRecorder.read()` raises `JarvisExit` to cleanly exit.
+
+### Mock classes (`tests/emulator/mocks.py`)
+| Mock | Replaces | Behavior |
+|---|---|---|
+| MockPulseRecorder | PulseRecorder | Returns zero bytes; raises JarvisExit when exhausted |
+| MockPulsePlayer | PulsePlayer | No-op writes; records audio events |
+| MockWakeModel | openwakeword Model | Low scores for N chunks, then fires |
+| MockVAD | Silero VAD | High prob for N speech_chunks, then low |
+| MockWhisper | WhisperModel | Returns scripted transcription |
+| MockTTS | PiperVoice | Records synthesized text, yields minimal audio |
+| MockClaudeProcess | subprocess.Popen | Streams scripted JSON events with delay |
+
+### Running
+```
+python tests/test_emulator.py                              # All scenarios
+python tests/test_emulator.py --fast                       # 100x accelerated
+python tests/test_emulator.py --debug                      # All debug flags
+python tests/test_emulator.py tests/scenarios/X.yaml       # Single scenario
+```
+
+### Scenario YAML format
+Each scenario defines a list of `interactions`, each with: `wake_word` (timing), `recording` (speech chunks), `transcription` (text), `claude` (delay, response, tool_events), and `expected` (validation checks). `time_scale` controls timing (1.0 = real-time, 0.01 = 100x faster).
+
+### Dependencies
+- **pyyaml**: YAML scenario file parsing
 
 ## Process Management
 Runs as a systemd service. Exit code 42 triggers restart (used by built-in restart/revert commands and SIGUSR1). SIGINT triggers graceful shutdown with spoken goodbye.

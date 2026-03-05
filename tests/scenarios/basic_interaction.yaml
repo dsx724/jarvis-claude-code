@@ -1,0 +1,20 @@
+name: "Basic question and answer"
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 5
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 20
+    transcription: "What time is it?"
+    claude:
+      delay: 0.5
+      response: "It's about 3 PM."
+      tool_events: []
+    expected:
+      spoken_response: "It's about 3 PM."
+      echo_filtered: false
+      claude_called: true
+
+termination: exit

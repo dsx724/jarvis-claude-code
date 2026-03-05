@@ -17,9 +17,9 @@ while true; do
         echo "Restarting Jarvis..."
 
         # Preflight checks before restart
-        if python -c "import py_compile; py_compile.compile('$SCRIPT_DIR/test_preflight.py', doraise=True)" 2>/dev/null; then
+        if python -c "import py_compile; py_compile.compile('$SCRIPT_DIR/tests/test_preflight.py', doraise=True)" 2>/dev/null; then
             echo "Running preflight checks..."
-            if timeout 120 python "$SCRIPT_DIR/test_preflight.py"; then
+            if timeout 120 python "$SCRIPT_DIR/tests/test_preflight.py"; then
                 echo "Preflight passed, restarting."
             else
                 echo "Preflight FAILED. Reverting last commit..."
@@ -27,7 +27,7 @@ while true; do
                 if git -C "$SCRIPT_DIR" revert --no-edit HEAD; then
                     echo "$REVERTED_SUBJECT" > "$SCRIPT_DIR/.last_revert_reason"
                     echo "Reverted HEAD. Retrying preflight..."
-                    if timeout 120 python "$SCRIPT_DIR/test_preflight.py"; then
+                    if timeout 120 python "$SCRIPT_DIR/tests/test_preflight.py"; then
                         echo "Preflight passed after revert, restarting."
                     else
                         echo "Preflight still failing after revert. Starting anyway."
