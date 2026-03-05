@@ -8,7 +8,7 @@ Voice assistant that listens for a wake word, records speech, transcribes it, se
 - `config/jarvis.ini` — User-editable configuration file (INI format) with all tunable settings.
 - `agents/main/CLAUDE.md` — System prompt for Claude Code sessions.
 - `logs/` — Runtime logs (gitignored): `error.log`, `conversation.log`.
-- `voices/` — Piper TTS voice models (downloaded on first run).
+- `voices/` — TTS voice models (Piper auto-downloaded on first run; Kokoro requires manual download).
 - `tests/test_preflight.py` — Pre-restart validation checks (safety gate).
 - `tests/test_emulator.py` — Emulation testing CLI (runs YAML scenarios through real Jarvis logic).
 - `tests/emulator/` — Mock classes, scenario driver, and runner for emulation tests.
@@ -42,10 +42,10 @@ Uses configurable model (default `medium.en`) with int8 quantization on CPU. Set
 - Writes audio to a temp WAV file, transcribes, deletes.
 - **Echo filtering**: After transcription, checks if the text matches something Jarvis recently said (via `is_self_echo()`). Uses fuzzy matching (`SequenceMatcher`) and substring checks against the last 3 spoken texts to filter out the mic picking up Jarvis's own TTS output.
 
-### Text-to-Speech (Piper)
-Configurable voice model via `jarvis.ini` (`[tts]` section). Default: `en_US-lessac-medium`.
-- TTS engine and voice model are selectable in `jarvis.ini` (currently supports `piper`).
-- Voices are auto-downloaded from Hugging Face on first use.
+### Text-to-Speech (Piper / Kokoro)
+Configurable voice model via `jarvis.ini` (`[tts]` section). Supports two engines:
+- **Piper** (default): Lightweight, fast. Voices auto-downloaded from Hugging Face. Default voice: `en_US-lessac-medium`. Sample rate: 22050Hz.
+- **Kokoro** (`kokoro-onnx`): Higher quality voices. Requires `kokoro-v1.0.onnx` and `voices-v1.0.bin` in `voices/` (download from GitHub releases). Default voice: `af_heart`. Sample rate: 24000Hz. Wrapped by `KokoroTTS` class for Piper-compatible interface.
 - Streams synthesized audio chunks to PulsePlayer.
 - Playback is interruptible by wake word detection via `listen_for_wake_word()` running on a background thread.
 - Markdown formatting (asterisks, backticks, headers, bullets) is stripped before synthesis via `clean_text_for_speech()`.
@@ -93,8 +93,8 @@ All tunable settings live in `config/jarvis.ini` (INI format), loaded directly b
 | MAX_RECORD_SECONDS | 15 | Recording safety cap |
 | CLAUDE_TIMEOUT | 300 | Claude API timeout (seconds) |
 | STT_MODEL | medium.en | Faster-whisper model for STT |
-| TTS_ENGINE | piper | Text-to-speech engine |
-| TTS_VOICE | en_US-lessac-medium | Piper voice model name |
+| TTS_ENGINE | piper | Text-to-speech engine (piper or kokoro) |
+| TTS_VOICE | en_US-lessac-medium | Voice model name (engine-specific) |
 | INITIAL_ACK_DELAY | 10.0 | Seconds before first spoken filler |
 
 ### Debug / Profiling Mode
@@ -112,7 +112,8 @@ Zero overhead when disabled (all debug paths are gated by per-component flags).
 - **openwakeword**: Wake word detection (ONNX)
 - **silero-vad**: Voice activity detection (ONNX)
 - **faster-whisper**: Speech-to-text (CTranslate2)
-- **piper-tts**: Text-to-speech (ONNX)
+- **piper-tts**: Text-to-speech (ONNX, default engine)
+- **kokoro-onnx**: Text-to-speech (ONNX, alternative engine)
 - **numpy**: Audio array processing
 - **torch**: Tensor ops for Silero VAD
 

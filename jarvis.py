@@ -258,29 +258,42 @@ def load_models():
 
         print(f"Loading TTS model ({TTS_ENGINE}: {TTS_VOICE})...")
         with debug_timer(DEBUG_MODELS, "load TTS model"):
-            if TTS_ENGINE != "piper":
+            if TTS_ENGINE == "piper":
+                from piper import PiperVoice
+                # Download voice if needed
+                voice_dir = os.path.join(os.path.dirname(__file__), "voices")
+                voice_path = os.path.join(voice_dir, f"{TTS_VOICE}.onnx")
+                voice_config = voice_path + ".json"
+
+                if not os.path.exists(voice_path):
+                    os.makedirs(voice_dir, exist_ok=True)
+                    print(f"Downloading TTS voice ({TTS_VOICE})...")
+                    import urllib.request
+                    # Parse voice name: en_US-lessac-medium -> en/en_US/lessac/medium
+                    parts = TTS_VOICE.split("-")
+                    lang = parts[0]                    # en_US
+                    lang_family = lang.split("_")[0]   # en
+                    dataset = parts[1]                 # lessac
+                    quality = parts[2]                 # medium
+                    base = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang_family}/{lang}/{dataset}/{quality}"
+                    urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx", voice_path)
+                    urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx.json", voice_config)
+
+                tts_voice = PiperVoice.load(voice_path)
+            elif TTS_ENGINE == "kokoro":
+                from kokoro_onnx import Kokoro
+                voice_dir = os.path.join(os.path.dirname(__file__), "voices")
+                model_path = os.path.join(voice_dir, "kokoro-v1.0.onnx")
+                voices_path = os.path.join(voice_dir, "voices-v1.0.bin")
+                if not os.path.exists(model_path) or not os.path.exists(voices_path):
+                    raise FileNotFoundError(
+                        f"Kokoro model files not found in {voice_dir}. "
+                        "Download kokoro-v1.0.onnx and voices-v1.0.bin from "
+                        "https://github.com/thewh1teagle/kokoro-onnx/releases"
+                    )
+                tts_voice = KokoroTTS(Kokoro(model_path, voices_path), TTS_VOICE)
+            else:
                 raise ValueError(f"Unsupported TTS engine: {TTS_ENGINE}")
-            from piper import PiperVoice
-            # Download voice if needed
-            voice_dir = os.path.join(os.path.dirname(__file__), "voices")
-            voice_path = os.path.join(voice_dir, f"{TTS_VOICE}.onnx")
-            voice_config = voice_path + ".json"
-
-            if not os.path.exists(voice_path):
-                os.makedirs(voice_dir, exist_ok=True)
-                print(f"Downloading TTS voice ({TTS_VOICE})...")
-                import urllib.request
-                # Parse voice name: en_US-lessac-medium -> en/en_US/lessac/medium
-                parts = TTS_VOICE.split("-")
-                lang = parts[0]                    # en_US
-                lang_family = lang.split("_")[0]   # en
-                dataset = parts[1]                 # lessac
-                quality = parts[2]                 # medium
-                base = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang_family}/{lang}/{dataset}/{quality}"
-                urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx", voice_path)
-                urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx.json", voice_config)
-
-            tts_voice = PiperVoice.load(voice_path)
 
     print("All models loaded.")
     return wake_model, whisper_model, tts_voice, vad_model
@@ -524,12 +537,33 @@ def is_self_echo(transcribed):
     return False
 
 
+# ---------------------------------------------------------------------------
+# Kokoro TTS wrapper — adapts kokoro_onnx.Kokoro to the interface speak() uses.
+# ---------------------------------------------------------------------------
+class KokoroTTS:
+    """Wrapper around kokoro_onnx.Kokoro that provides a Piper-compatible interface."""
+
+    class _Config:
+        def __init__(self, sample_rate):
+            self.sample_rate = sample_rate
+
+    def __init__(self, kokoro, voice_name):
+        self._kokoro = kokoro
+        self._voice = voice_name
+        self.config = self._Config(24000)
+
+    def synthesize(self, text):
+        """Yield audio chunks as numpy float32 arrays (matching Piper's interface)."""
+        samples, _rate = self._kokoro.create(text, voice=self._voice, speed=1.0)
+        yield type('Chunk', (), {'audio_float_array': samples.astype(np.float32)})()
+
+
 # Lock held while TTS audio is playing, so signal handlers can wait for it.
 _tts_lock = threading.Lock()
 
 
 def speak(tts_voice, text, interrupt_event=None):
-    """Speak text aloud using piper TTS, streaming via PulseAudio.
+    """Speak text aloud using TTS, streaming via PulseAudio.
 
     If interrupt_event is provided (a threading.Event), playback stops
     early when the event is set (e.g. by wake word detection).

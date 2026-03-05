@@ -119,13 +119,15 @@ def check_config_values():
         errors.append(f"STT_MODEL={mod.STT_MODEL} not in {supported_stt_models}")
 
     # TTS engine validation
-    supported_engines = ("piper",)
+    supported_engines = ("piper", "kokoro")
     if mod.TTS_ENGINE not in supported_engines:
         errors.append(f"TTS_ENGINE={mod.TTS_ENGINE} not in {supported_engines}")
 
-    # TTS voice format validation (expect lang-dataset-quality)
+    # TTS voice format validation (engine-specific)
     if mod.TTS_ENGINE == "piper" and mod.TTS_VOICE.count("-") < 2:
         errors.append(f"TTS_VOICE={mod.TTS_VOICE} should be format lang-dataset-quality (e.g. en_US-lessac-medium)")
+    if mod.TTS_ENGINE == "kokoro" and not mod.TTS_VOICE:
+        errors.append("TTS_VOICE must be set for kokoro engine (e.g. af_heart)")
 
     # Range checks
     if not (0 < mod.VAD_THRESHOLD <= 1.0):
@@ -171,6 +173,15 @@ def check_module_import():
 # ---------------------------------------------------------------------------
 # 5. Function signatures
 # ---------------------------------------------------------------------------
+def check_kokoro_wrapper():
+    mod = check_module_import._module
+    cls = getattr(mod, "KokoroTTS", None)
+    if cls is None:
+        raise AttributeError("KokoroTTS class not found in jarvis.py")
+    if not hasattr(cls, "synthesize"):
+        raise AttributeError("KokoroTTS missing synthesize method")
+
+
 def check_function_signatures():
     mod = check_module_import._module
     expected = {
@@ -301,6 +312,7 @@ if __name__ == "__main__":
     check("Module import", check_module_import)
     check("Config import", check_config_import)
     check("Config value validation", check_config_values)
+    check("Kokoro TTS wrapper", check_kokoro_wrapper)
     check("Function signatures", check_function_signatures)
     check("Text cleaning for TTS", check_text_cleaning)
     check("Echo detection", check_echo_detection)

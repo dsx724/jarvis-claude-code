@@ -1,4 +1,5 @@
 venv/
 voices/*.onnx
+voices/*.bin
 __pycache__/
 logs/
