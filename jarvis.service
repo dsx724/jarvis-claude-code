@@ -6,6 +6,7 @@ After=sound.target
 Type=simple
 WorkingDirectory=/home/dxue/git/claude/jarvis
 ExecStart=/home/dxue/git/claude/jarvis/jarvis.sh
+SyslogIdentifier=jarvis
 Restart=on-failure
 RestartSec=5
 Environment=PATH=/home/dxue/.local/bin:/usr/local/bin:/usr/bin:/bin
