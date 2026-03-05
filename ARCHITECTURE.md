@@ -28,7 +28,23 @@ Uses openwakeword with a configurable wake word (`WAKE_WORD_NAME`, default `jarv
 - Feeds 1280-sample (80ms) chunks continuously.
 - Activation threshold: configurable (`WAKE_WORD_THRESHOLD`, default 0.9).
 - The wake word name is used throughout: model selection, TTS filtering (prevents TTS from saying the wake word and re-triggering), built-in command phrases (e.g. "restart jarvis"), and the ready message.
-- **Interruption**: During TTS playback, a background thread opens a separate PulseAudio recording stream and monitors for the wake word. If detected, playback stops immediately and Jarvis goes straight to recording the next command (skipping the normal wake word wait).
+
+#### Always-On Background Listener
+A persistent daemon thread (`_always_on_listener`) runs for the entire process lifetime with its own `bg_wake_model` instance (separate from the main thread's `wake_model` to avoid corrupting `predict()`'s internal sliding window state). Sets `_wake_detected` event when the wake word is heard.
+
+**Suppression timeline:**
+| Phase | Background listener | Main thread |
+|---|---|---|
+| IDLE | ACTIVE | Reads chunks + predicts |
+| RECORDING | SUPPRESSED (`_listener_suppress`) | Records audio |
+| CLAUDE WAIT | ACTIVE | Checks `_wake_detected` in wait timeouts |
+| TTS | ACTIVE | `speak()` checks `_wake_detected` in sub-chunk loop |
+| POST-TTS | Resets via `_listener_needs_reset` flag | Flushes stream, resets main wake model |
+
+This enables:
+1. **"Stop" builtin**: User can say "stop" or "cancel" during Claude processing to kill the subprocess.
+2. **Prompt queuing**: User can queue new prompts while Claude is busy; they are processed after the current task.
+3. **Unified TTS interruption**: No more per-speech listener threads; `speak_and_clear` passes `_wake_detected` as the interrupt event.
 
 ### Voice Activity Detection (Silero VAD)
 ML-based speech/silence detection using `silero-vad` (ONNX mode).
@@ -47,7 +63,7 @@ Configurable voice model via `jarvis.ini` (`[tts]` section). Supports two engine
 - **Piper** (default): Lightweight, fast. Voices auto-downloaded from Hugging Face. Default voice: `en_US-lessac-medium`. Sample rate: 22050Hz.
 - **Kokoro** (`kokoro-onnx`): Higher quality voices. Requires `kokoro-v1.0.onnx` and `voices-v1.0.bin` in `voices/` (download from GitHub releases). Default voice: `af_heart`. Sample rate: 24000Hz. Wrapped by `KokoroTTS` class for Piper-compatible interface.
 - Streams synthesized audio chunks to PulsePlayer.
-- Playback is interruptible by wake word detection via `listen_for_wake_word()` running on a background thread.
+- Playback is interruptible by the always-on background listener via `_wake_detected` event.
 - Markdown formatting (asterisks, backticks, headers, bullets) is stripped before synthesis via `clean_text_for_speech()`.
 
 ### Claude Code Integration
@@ -61,6 +77,7 @@ Sends transcribed text to `claude` CLI via `subprocess.Popen` with `--output-for
 Handled locally without calling Claude:
 - **restart** / **reboot**: Exits with code 42 (systemd restarts).
 - **revert**: Runs `git revert HEAD` and restarts.
+- **stop** / **cancel** / **never mind** / **nevermind**: Kills Claude mid-processing (only active during Claude wait loop).
 - **queue** / **show queue** / **list queue** / **pending prompts**: Lists queued prompts.
 - **clear queue** / **empty queue**: Clears the queue and cancels any pending retry timer.
 
@@ -74,16 +91,19 @@ When Claude Code returns a rate limit message, the prompt is saved to `logs/prom
 - **Queue operations**: `load_queue()`, `save_queue()`, `queue_add()`, `queue_pop()`, `queue_list()`, `queue_clear()` — all disk-backed, no in-memory cache.
 
 ## Main Loop Flow
-1. Read audio chunk → feed to wake word model.
+1. Read audio chunk → feed to wake word model (also check `_wake_detected` from bg listener).
 1b. If `_queue_ready_event` is set (rate limit expired), process queued prompts.
-2. On activation → `record_until_silence()` with Silero VAD.
-3. Transcribe with faster-whisper.
+2. On activation → suppress bg listener, `record_until_silence()` with Silero VAD, unsuppress.
+3. Transcribe with faster-whisper, strip wake word prefix via `_strip_wake_prefix()`.
 4. Filter self-echo (discard if transcription matches recently spoken text).
-5. Check for built-in commands (restart, revert, queue, clear queue).
-6. Send to Claude Code (with timeout-based spoken fillers).
+5. Check for built-in commands (restart, revert, stop, queue, clear queue).
+6. Send to Claude Code (with timeout-based spoken fillers); `proc_holder` tracks subprocess.
+6a. During Claude wait: if `_wake_detected` fires, record + transcribe the interrupt.
+   - "stop"/"cancel"/"never mind" → kill Claude process, speak "Stopped.", continue loop.
+   - Other text → `queue_add()`, speak "Queued.", continue waiting for Claude.
 6b. If response is a rate limit → queue prompt, schedule retry timer, skip speech.
-7. Speak response (blocking).
-8. Reset wake word model state, loop back.
+7. Speak response (interruptible via `_wake_detected`).
+8. Reset wake word model state (main + bg via `_listener_needs_reset`), loop back.
 
 ## Configuration
 All tunable settings live in `config/jarvis.ini` (INI format), loaded directly by `jarvis.py` at startup. Key values:
@@ -140,7 +160,8 @@ Safety gate between code changes and restart. Runs automatically in `jarvis.sh` 
 2. **Config import** — Mirrors the exact import statement from `jarvis.py`.
 3. **Config value validation** — Type checks, range checks (e.g., `0 < VAD_THRESHOLD <= 1.0`), non-empty message lists, TTS engine/voice validation.
 4. **Module import** — `importlib` loads `jarvis.py` (catches broken imports, missing deps).
-5. **Function signatures** — Verifies `load_models`, `record_until_silence`, `transcribe`, `is_self_echo`, `speak`, `send_to_claude`, `main`, `parse_rate_limit`, queue functions exist with expected params.
+5. **Function signatures** — Verifies `load_models`, `record_until_silence`, `transcribe`, `is_self_echo`, `speak`, `send_to_claude`, `_always_on_listener`, `_strip_wake_prefix`, `main`, `parse_rate_limit`, queue functions exist with expected params.
+5b. **Listener state** — Verifies `_wake_detected`, `_listener_suppress`, `_listener_needs_reset` module attributes exist.
 6. **Echo detection** — Verifies `is_self_echo()` correctly identifies echoes and passes through unrelated text.
 7. **Rate limit parsing** — Verifies `parse_rate_limit()` extracts reset times from known formats and returns None for non-rate-limit text.
 8. **Queue operations** — Tests `queue_add`, `queue_pop`, `queue_list`, `queue_clear` using a temp file.

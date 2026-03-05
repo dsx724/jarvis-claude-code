@@ -194,7 +194,8 @@ def check_function_signatures():
         "is_garbage_transcription": ["text"],
         "is_self_echo": ["transcribed"],
         "speak": ["tts_voice", "text"],
-        "listen_for_wake_word": ["wake_model", "interrupt_event"],
+        "_always_on_listener": ["wake_model"],
+        "_strip_wake_prefix": ["text"],
         "send_to_claude": ["text"],
         "main": [],
         "parse_rate_limit": ["response"],
@@ -221,6 +222,23 @@ def check_function_signatures():
             errors.append(f"{fn_name}: expected params {params}, got {actual}")
     if errors:
         raise ValueError("; ".join(errors))
+
+
+# ---------------------------------------------------------------------------
+# 5b. Always-on listener module attributes
+# ---------------------------------------------------------------------------
+def check_listener_state():
+    mod = check_module_import._module
+    missing = []
+    for attr in ("_wake_detected", "_listener_suppress", "_listener_needs_reset"):
+        if not hasattr(mod, attr):
+            missing.append(attr)
+    if missing:
+        raise AttributeError(f"Missing always-on listener attributes: {missing}")
+    # _wake_detected should be a threading.Event
+    import threading
+    if not isinstance(mod._wake_detected, threading.Event):
+        raise TypeError(f"_wake_detected should be threading.Event, got {type(mod._wake_detected)}")
 
 
 # ---------------------------------------------------------------------------
@@ -258,6 +276,8 @@ def check_echo_detection():
     assert mod.is_self_echo("Restarting now.")
     assert mod.is_self_echo("restarting now")
     assert mod.is_self_echo("Sorry, the revert failed.")
+    assert mod.is_self_echo("Stopped.")
+    assert mod.is_self_echo("Queued. I'll handle that after this task.")
     # Unrelated text should not match
     assert not mod.is_self_echo("turn on the lights")
     assert not mod.is_self_echo("what is the weather today")
@@ -389,6 +409,7 @@ if __name__ == "__main__":
     check("Config value validation", check_config_values)
     check("Kokoro TTS wrapper", check_kokoro_wrapper)
     check("Function signatures", check_function_signatures)
+    check("Listener state attributes", check_listener_state)
     check("Text cleaning for TTS", check_text_cleaning)
     check("Echo detection", check_echo_detection)
     check("Rate limit parsing", check_rate_limit_parsing)

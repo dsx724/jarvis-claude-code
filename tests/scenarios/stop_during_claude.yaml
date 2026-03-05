@@ -1,0 +1,24 @@
+name: "Stop command kills Claude mid-processing"
+time_scale: 0.01
+
+interactions:
+  # Long Claude delay + interrupt wake + "stop" transcription
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Write a complex function for me."
+    claude:
+      delay: 3000.0
+      response: "Here is the function you requested."
+      tool_events: []
+    _interrupt_wake: true
+    _bg_transcription: "stop"
+    _bg_recording:
+      speech_chunks: 5
+    expected:
+      claude_called: true
+      stopped: true
+
+termination: exit

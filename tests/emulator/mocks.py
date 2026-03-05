@@ -84,6 +84,8 @@ class MockWakeModel:
         self._chunk_count = 0
         self._triggered = False
         self._trigger_count = 0
+        # Track interrupt triggers: fire only once per interaction
+        self._interrupt_fired_for = -1
 
     def predict(self, audio_data):
         interaction = self.driver.current_interaction()
@@ -98,9 +100,12 @@ class MockWakeModel:
         is_interrupt_thread = threading.current_thread() is not threading.main_thread()
 
         if is_interrupt_thread:
-            # For interrupt listener: trigger if interaction says so
+            # For interrupt listener: trigger once per interaction if flagged
             if interaction.get("_interrupt_wake", False):
-                return {"hey_jarvis_v0.1": trigger_score}
+                idx = self.driver._interaction_index
+                if idx != self._interrupt_fired_for:
+                    self._interrupt_fired_for = idx
+                    return {"hey_jarvis_v0.1": trigger_score}
             return {"hey_jarvis_v0.1": 0.0}
 
         # Main loop wake word detection
@@ -124,11 +129,18 @@ class MockWakeModel:
 
 
 class MockVAD:
-    """Replaces Silero VAD. High prob for N speech_chunks, then low."""
+    """Replaces Silero VAD. High prob for N speech_chunks, then low.
+
+    Tracks recording call count per interaction. The second call within the
+    same interaction uses _bg_recording.speech_chunks if present (for
+    background recording during Claude processing).
+    """
 
     def __init__(self, driver):
         self.driver = driver
         self._speech_chunk_count = 0
+        self._recording_call_count = 0
+        self._last_interaction_index = -1
 
     def __call__(self, audio_tensor, rate):
         interaction = self.driver.current_interaction()
@@ -136,7 +148,12 @@ class MockVAD:
             return _MockTensor(0.0)
 
         rec_cfg = interaction.get("recording", {})
-        speech_chunks = rec_cfg.get("speech_chunks", 20)
+        # Use _bg_recording config for 2nd+ recording calls in same interaction
+        if self._recording_call_count > 1:
+            bg_cfg = interaction.get("_bg_recording", {})
+            speech_chunks = bg_cfg.get("speech_chunks", rec_cfg.get("speech_chunks", 20))
+        else:
+            speech_chunks = rec_cfg.get("speech_chunks", 20)
 
         self._speech_chunk_count += 1
         if self._speech_chunk_count <= speech_chunks:
@@ -145,6 +162,12 @@ class MockVAD:
 
     def reset_states(self):
         self._speech_chunk_count = 0
+        # Track recording calls per interaction
+        idx = self.driver._interaction_index
+        if idx != self._last_interaction_index:
+            self._last_interaction_index = idx
+            self._recording_call_count = 0
+        self._recording_call_count += 1
 
 
 class _MockTensor:
@@ -256,7 +279,9 @@ class MockClaudeProcess:
         })
 
     def kill(self):
-        pass
+        self.driver.record_event("claude_killed", {})
+        self.stdout._killed.set()
+        self.returncode = -9
 
     def wait(self):
         self.returncode = 0
@@ -270,12 +295,16 @@ class _DelayedLineIterator:
         self._lines = text.splitlines(keepends=True)
         self._delay = delay
         self._first = True
+        self._killed = threading.Event()
 
     def __iter__(self):
         for line in self._lines:
             if self._first:
                 self._first = False
-                time.sleep(self._delay)
+                # Sleep in small increments so kill() can interrupt
+                self._killed.wait(timeout=self._delay)
+                if self._killed.is_set():
+                    return
             yield line
 
     def read(self):

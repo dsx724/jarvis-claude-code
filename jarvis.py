@@ -462,6 +462,8 @@ BUILTIN_RESPONSES = [
     "The queue is empty.",
     "Queue cleared.",
     "All queued prompts have been processed.",
+    "Stopped.",
+    "Queued. I'll handle that after this task.",
 ]
 
 # Pre-normalized set of all canned messages for fast echo lookup
@@ -609,6 +611,11 @@ _RATE_LIMIT_RE = re.compile(
 _queue_ready_event = threading.Event()
 _queue_timer = None
 
+# Always-on background wake word listener state
+_wake_detected = threading.Event()    # bg listener sets when wake word heard
+_listener_suppress = False            # True during recording — bg skips predict()
+_listener_needs_reset = False         # True after TTS — bg resets its own model
+
 
 def parse_rate_limit(response):
     """Parse a rate limit message and return a tz-aware datetime for the reset time, or None."""
@@ -750,25 +757,52 @@ def speak(tts_voice, text, interrupt_event=None, keep_wake_word=False):
     return interrupted
 
 
-def listen_for_wake_word(wake_model, interrupt_event):
-    """Monitor mic for wake word in a background thread, setting interrupt_event when detected.
+def _always_on_listener(wake_model):
+    """Persistent daemon thread that monitors mic for wake word.
 
-    Opens its own PulseAudio recording stream so it can listen independently
-    of the main stream.
+    Opens its own PulseAudio recording stream and runs forever. Sets
+    _wake_detected when the wake word is heard.  Respects _listener_suppress
+    (skips prediction during recording) and _listener_needs_reset (resets
+    its own wake model after TTS playback).
     """
+    global _listener_suppress, _listener_needs_reset
     listener = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
     try:
-        while not interrupt_event.is_set():
+        while True:
             data = listener.read(CHUNK, exception_on_overflow=False)
+
+            if _listener_needs_reset:
+                reset_wake_model(wake_model)
+                _listener_needs_reset = False
+
+            if _listener_suppress or _wake_detected.is_set():
+                continue
+
             audio_data = np.frombuffer(data, dtype=np.int16)
             prediction = wake_model.predict(audio_data)
-            for model_name, score in prediction.items():
+            for _model_name, score in prediction.items():
                 if score > WAKE_WORD_THRESHOLD:
-                    print("\n*** Wake word detected (interrupting speech) ***")
-                    interrupt_event.set()
+                    print("\n*** Wake word detected (background listener) ***")
+                    _wake_detected.set()
                     break
     finally:
         listener.close()
+
+
+def _strip_wake_prefix(text):
+    """Strip wake word prefix from transcribed text (e.g. 'Hey Jarvis, ...')."""
+    prefixes = [
+        f"hey {WAKE_WORD_NAME.lower()} ",
+        f"hey {WAKE_WORD_NAME.lower()}, ",
+        f"{WAKE_WORD_NAME.lower()} ",
+        f"{WAKE_WORD_NAME.lower()}, ",
+    ]
+    for prefix in prefixes:
+        if text.lower().startswith(prefix):
+            stripped = text[len(prefix):].strip()
+            if stripped:
+                return stripped
+    return text
 
 
 SESSION_ID = str(uuid.uuid4())
@@ -807,11 +841,13 @@ def _tool_status(tool_name, tool_input):
     return None
 
 
-def send_to_claude(text, status_queue=None, first_call=[True]):
+def send_to_claude(text, status_queue=None, first_call=[True], proc_holder=None):
     """Send text to Claude Code and return the response, resuming the session.
 
     If status_queue is provided, pushes short speakable tool-status strings
     as Claude emits tool_use events (stream-json mode).
+    If proc_holder is provided (a dict), stores the subprocess as proc_holder["proc"]
+    so the caller can kill it mid-processing.
     """
     print(f"\n> {text}\n")
     debug_log(DEBUG_CLAUDE, f"send_to_claude — started, prompt: '{text[:80]}'")
@@ -831,6 +867,8 @@ def send_to_claude(text, status_queue=None, first_call=[True]):
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, env=env,
         )
+        if proc_holder is not None:
+            proc_holder["proc"] = proc
         t_proc_start = time.perf_counter()
         debug_log(DEBUG_CLAUDE, f"  subprocess started in {t_proc_start - t_claude_start:.3f}s")
 
@@ -901,7 +939,22 @@ def send_to_claude(text, status_queue=None, first_call=[True]):
 
 
 def main():
+    global _listener_suppress, _listener_needs_reset
     wake_model, whisper_model, tts_voice, vad_model = load_models()
+
+    # Load a separate wake word model for the background listener thread.
+    # wake_model.predict() has internal state (sliding window) — two threads
+    # calling it concurrently corrupts state, so each thread needs its own.
+    from openwakeword.model import Model as WakeModel
+    bg_wake_model = WakeModel(wakeword_model_paths=[
+        os.path.join(os.path.dirname(__import__('openwakeword').__file__),
+                     "resources", "models", f"hey_{WAKE_WORD_NAME}_v0.1.onnx")
+    ])
+
+    # Start always-on background listener
+    threading.Thread(
+        target=_always_on_listener, args=(bg_wake_model,), daemon=True
+    ).start()
 
     stream = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
 
@@ -922,29 +975,26 @@ def main():
     def speak_and_clear(text, interruptible=False, keep_wake_word=False):
         """Speak text, then flush mic buffer and reset wake model to prevent self-triggering.
 
-        If interruptible=True, listens for the wake word during playback and
-        stops early if detected. Returns True if interrupted, False otherwise.
+        If interruptible=True, the always-on background listener can interrupt
+        playback via _wake_detected. Returns True if interrupted, False otherwise.
         If keep_wake_word=True, the wake word is not replaced in the spoken text.
         """
+        global _listener_suppress, _listener_needs_reset
         # Track spoken text for echo detection (time-windowed)
         if text:
             _recently_spoken.append((time.time(), text))
         if interruptible:
-            interrupt_event = threading.Event()
-            listener_thread = threading.Thread(
-                target=listen_for_wake_word,
-                args=(wake_model, interrupt_event),
-                daemon=True,
-            )
-            listener_thread.start()
-            interrupted = speak(tts_voice, text, interrupt_event=interrupt_event,
+            _wake_detected.clear()  # clear any stale detection
+            interrupted = speak(tts_voice, text, interrupt_event=_wake_detected,
                                 keep_wake_word=keep_wake_word)
-            interrupt_event.set()  # signal listener to stop if still running
-            listener_thread.join(timeout=1.0)
         else:
             interrupted = speak(tts_voice, text, keep_wake_word=keep_wake_word)
+        # After all speech: suppress bg listener, flush main stream, reset models
+        _listener_suppress = True
         stream.flush()
         reset_wake_model(wake_model)
+        _listener_needs_reset = True   # bg thread resets itself
+        _listener_suppress = False
         return interrupted
 
     wn = WAKE_WORD_NAME.capitalize()
@@ -1013,6 +1063,8 @@ def main():
             print("\n*** Speech interrupted — listening for command ***")
             skip_wake_word = False
 
+        # Suppress bg listener during recording to avoid concurrent mic access
+        _listener_suppress = True
         # Record until silence, prepending buffered audio
         audio_bytes = record_until_silence(stream, vad_model, pre_roll=list(pre_roll_buf))
         pre_roll_buf.clear()
@@ -1021,6 +1073,8 @@ def main():
         # to prevent stale audio from re-triggering the wake word
         stream.flush()
         reset_wake_model(wake_model)
+        _listener_needs_reset = True
+        _listener_suppress = False
 
         # Transcribe
         with debug_timer(DEBUG_TRANSCRIPTION, "transcribe (end-to-end)"):
@@ -1034,19 +1088,7 @@ def main():
             continue
 
         # Strip wake word prefix if the mic captured it in pre-roll audio
-        _wake_prefixes = [
-            f"hey {WAKE_WORD_NAME.lower()} ",
-            f"hey {WAKE_WORD_NAME.lower()}, ",
-            f"{WAKE_WORD_NAME.lower()} ",
-            f"{WAKE_WORD_NAME.lower()}, ",
-        ]
-        text_stripped = text
-        for prefix in _wake_prefixes:
-            if text_stripped.lower().startswith(prefix):
-                text_stripped = text_stripped[len(prefix):].strip()
-                break
-        if text_stripped:
-            text = text_stripped
+        text = _strip_wake_prefix(text)
 
         # Handle built-in commands before echo filtering — keywords like
         # "restart" are substrings of canned responses ("Restarting now")
@@ -1135,21 +1177,79 @@ def main():
         print(f"Transcribed: {text}")
         conversation_logger.info("USER: %s", text)
 
-        # Send to Claude, with a spoken filler if it takes too long
+        # Send to Claude, with a spoken filler if it takes too long.
+        # proc_holder lets us kill Claude mid-processing if user says "stop".
         result_holder = {}
         done_event = threading.Event()
         tool_queue = Queue()
+        proc_holder = {}
 
         def claude_worker():
-            result_holder["response"] = send_to_claude(text, status_queue=tool_queue)
+            result_holder["response"] = send_to_claude(
+                text, status_queue=tool_queue, proc_holder=proc_holder
+            )
             done_event.set()
 
         threading.Thread(target=claude_worker, daemon=True).start()
 
+        def _check_wake_during_claude():
+            """Handle a wake word detection while Claude is processing.
+
+            Records speech, transcribes it, and decides:
+            - "stop"/"cancel"/"never mind"/"nevermind" → return "stop"
+            - Non-empty other text → queue it, return "queued"
+            - Empty/garbage → return None
+            """
+            global _listener_suppress, _listener_needs_reset
+            _wake_detected.clear()
+            _listener_suppress = True
+            bg_audio = record_until_silence(stream, vad_model)
+            stream.flush()
+            reset_wake_model(wake_model)
+            _listener_needs_reset = True
+            _listener_suppress = False
+
+            bg_text = transcribe(whisper_model, bg_audio)
+            if not bg_text or is_garbage_transcription(bg_text):
+                return None
+            bg_text = _strip_wake_prefix(bg_text)
+            bg_lower = bg_text.lower().strip().rstrip(".")
+            if bg_lower in ("stop", "cancel", "never mind", "nevermind"):
+                return "stop"
+            queue_add(bg_text)
+            speak_and_clear("Queued. I'll handle that after this task.")
+            return "queued"
+
+        stopped = False
         if not done_event.wait(timeout=INITIAL_ACK_DELAY):
-            speak_and_clear(random.choice(ACKNOWLEDGEMENTS))
-            while not done_event.wait(timeout=STILL_WORKING_INTERVAL):
-                # Drain queue, keep only the latest tool status
+            if _wake_detected.is_set():
+                wake_result = _check_wake_during_claude()
+                if wake_result == "stop":
+                    if "proc" in proc_holder:
+                        proc_holder["proc"].kill()
+                    done_event.wait(timeout=2.0)
+                    speak_and_clear("Stopped.")
+                    stopped = True
+                elif wake_result is None:
+                    speak_and_clear(random.choice(ACKNOWLEDGEMENTS))
+                # "queued" → continue waiting normally
+            else:
+                speak_and_clear(random.choice(ACKNOWLEDGEMENTS))
+
+            while not stopped and not done_event.wait(timeout=STILL_WORKING_INTERVAL):
+                if _wake_detected.is_set():
+                    wake_result = _check_wake_during_claude()
+                    if wake_result == "stop":
+                        if "proc" in proc_holder:
+                            proc_holder["proc"].kill()
+                        done_event.wait(timeout=2.0)
+                        speak_and_clear("Stopped.")
+                        stopped = True
+                        break
+                    elif wake_result == "queued":
+                        continue  # keep waiting for Claude
+                    # wake_result is None — fall through to filler
+                # Normal filler/tool status logic
                 latest_status = None
                 try:
                     while True:
@@ -1160,6 +1260,9 @@ def main():
                     speak_and_clear(latest_status)
                 else:
                     speak_and_clear(random.choice(STILL_WORKING))
+
+        if stopped:
+            continue  # back to top of main loop
 
         response = result_holder["response"]
         conversation_logger.info("CLAUDE: %s", response)

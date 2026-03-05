@@ -47,6 +47,10 @@ def _reset_module_state(jarvis):
         jarvis._queue_timer = None
     # Clear queue file so scenarios start fresh
     jarvis.queue_clear()
+    # Reset always-on listener state
+    jarvis._wake_detected.clear()
+    jarvis._listener_suppress = False
+    jarvis._listener_needs_reset = False
     # Reset send_to_claude's mutable default (first_call flag)
     sig = jarvis.send_to_claude.__code__
     for const in sig.co_consts:
@@ -123,12 +127,27 @@ def run_scenario(scenario_path, time_scale=None, debug=False):
     # correct interaction index.
     original_transcribe = jarvis.transcribe
 
+    _transcribe_call_count = [0]  # per-interaction call counter
+    _transcribe_last_index = [-1]
+
     def patched_transcribe(whisper_model, audio_bytes):
-        """Return scripted transcription from current interaction."""
+        """Return scripted transcription from current interaction.
+
+        First call per interaction returns 'transcription'.
+        Subsequent calls return '_bg_transcription' (for mid-Claude wake word).
+        """
         interaction = driver.current_interaction()
         text = ""
         if interaction:
-            text = interaction.get("transcription", "")
+            idx = driver._interaction_index
+            if idx != _transcribe_last_index[0]:
+                _transcribe_last_index[0] = idx
+                _transcribe_call_count[0] = 0
+            _transcribe_call_count[0] += 1
+            if _transcribe_call_count[0] > 1:
+                text = interaction.get("_bg_transcription", "")
+            else:
+                text = interaction.get("transcription", "")
         driver.record_event("transcription", {"text": text})
         return text
 
@@ -139,6 +158,12 @@ def run_scenario(scenario_path, time_scale=None, debug=False):
     original_os_exit = os._exit
     original_popen = subprocess.Popen
     original_run = subprocess.run
+
+    # Patch openwakeword.Model so main() creates a mock bg_wake_model
+    import openwakeword.model as _oww_mod
+    original_oww_model = _oww_mod.Model
+    mock_bg_wake = MockWakeModel(driver)
+    _oww_mod.Model = lambda **kwargs: mock_bg_wake
 
     def mock_pulse_recorder(rate=16000, channels=1, chunk=1280):
         return MockPulseRecorder(driver, rate, channels, chunk)
@@ -189,6 +214,7 @@ def run_scenario(scenario_path, time_scale=None, debug=False):
         os._exit = original_os_exit
         subprocess.Popen = original_popen
         subprocess.run = original_run
+        _oww_mod.Model = original_oww_model
 
     report.events = driver.events
 
@@ -271,6 +297,40 @@ def _validate(driver, report):
                     f"got {filler_count}"
                 )
 
+        # Check stopped (Claude was killed mid-processing)
+        if "stopped" in expected:
+            should_stop = expected["stopped"]
+            kill_events = [e for e in events if e["type"] == "claude_killed"]
+            was_stopped = len(kill_events) > 0
+            if should_stop != was_stopped:
+                report.fail(
+                    f"Interaction {i}: expected stopped={should_stop}, "
+                    f"got {was_stopped} (kill events: {len(kill_events)})"
+                )
+            if should_stop:
+                # Verify "Stopped." was spoken
+                stopped_spoken = any(
+                    e["data"]["text"] == "Stopped." for e in tts_events
+                )
+                if not stopped_spoken:
+                    report.fail(
+                        f"Interaction {i}: expected 'Stopped.' TTS, "
+                        f"got: {[e['data']['text'] for e in tts_events]}"
+                    )
+
+        # Check queued_prompt (a prompt was queued during Claude processing)
+        if "queued_prompt" in expected:
+            expected_prompt = expected["queued_prompt"]
+            # The prompt should have been queued via queue_add
+            queued_spoken = any(
+                "Queued" in e["data"]["text"] for e in tts_events
+            )
+            if not queued_spoken:
+                report.fail(
+                    f"Interaction {i}: expected queue confirmation TTS, "
+                    f"got: {[e['data']['text'] for e in tts_events]}"
+                )
+
 
 def _is_builtin_command(text):
     """Check if text matches a built-in command."""
@@ -283,5 +343,6 @@ def _is_builtin_command(text):
         "queue", "show queue", "whats in the queue", "what's in the queue",
         "list queue", "pending prompts",
         "clear queue", "empty queue", "clear the queue",
+        "stop", "cancel", "never mind", "nevermind",
     )
     return lower in builtin_phrases
