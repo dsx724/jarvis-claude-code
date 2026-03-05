@@ -1,0 +1,34 @@
+name: "Builtin command near-miss goes to Claude"
+# Phrases containing builtin keywords but not matching exact builtin
+# patterns should pass through to Claude, not trigger builtin actions.
+time_scale: 1.0
+
+interactions:
+  # "restart the docker container" contains "restart" but should go to Claude
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Restart the docker container."
+    claude:
+      delay: 0.3
+      response: "I'll restart the Docker container for you."
+    expected:
+      claude_called: true
+      spoken_response: "I'll restart the Docker container for you."
+
+  # "can you revert the database migration" contains "revert" but not exact
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Can you revert the database migration?"
+    claude:
+      delay: 0.3
+      response: "Sure, I'll revert the database migration."
+    expected:
+      claude_called: true
+
+termination: exit

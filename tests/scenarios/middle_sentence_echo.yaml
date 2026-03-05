@@ -1,0 +1,32 @@
+name: "Middle sentence of multi-sentence response echoed"
+# Claude gives a 3-sentence response. The mic picks up only the
+# second sentence. Sentence splitting should catch this.
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 20
+    transcription: "Teach me about programming."
+    claude:
+      delay: 0.3
+      response: "The first thing to know is about variables. Functions are blocks of reusable code. Classes let you group data and behavior together."
+    expected:
+      claude_called: true
+
+  # Mic picks up only the middle sentence
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Functions are blocks of reusable code."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+termination: exit

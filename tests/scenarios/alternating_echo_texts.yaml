@@ -1,0 +1,47 @@
+name: "Alternating echo texts reset repeat counter"
+# Echo repeat override requires the SAME text N times. If different canned
+# messages echo back-to-back, the counter resets each time and they are
+# all filtered (correct behavior). But if someone genuinely wants to say
+# "bear with me" they must say it twice consecutively.
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Tell me a joke."
+    claude:
+      delay: 0.3
+      response: "Why did the chicken cross the road? To get to the other side."
+    expected:
+      claude_called: true
+
+  # Mic picks up acknowledgement echo
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Bear with me."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+  # Different canned message echo — counter should reset, still filtered
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Let me think about that."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+termination: exit

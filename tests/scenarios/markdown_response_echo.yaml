@@ -1,0 +1,33 @@
+name: "Echo of markdown-cleaned response matches"
+# Claude response contains markdown: "Here's the **answer**: `42`"
+# clean_text_for_speech strips it to "Here's the answer: 42"
+# Both normalize to "heres the answer 42" so the echo should be caught.
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "What is the answer?"
+    claude:
+      delay: 0.3
+      response: "Here's the **answer**: `42`."
+    expected:
+      claude_called: true
+
+  # Mic picks up the cleaned TTS version
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "Here's the answer 42."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+termination: exit

@@ -461,10 +461,17 @@ def _normalize(text):
 
 
 def _get_canned_normalized():
-    """Return set of normalized canned messages (built once)."""
+    """Return set of normalized canned messages (built once).
+
+    Includes both original and TTS-cleaned versions so echoes of spoken
+    text are caught (e.g. TTS replaces 'Jarvis' with 'wake word').
+    """
     global _canned_normalized
     if _canned_normalized is None:
-        _canned_normalized = {_normalize(m) for m in _CANNED_MESSAGES}
+        _canned_normalized = set()
+        for m in _CANNED_MESSAGES:
+            _canned_normalized.add(_normalize(m))
+            _canned_normalized.add(_normalize(clean_text_for_speech(m)))
     return _canned_normalized
 
 

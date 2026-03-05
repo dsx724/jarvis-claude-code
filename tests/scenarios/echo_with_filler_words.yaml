@@ -1,0 +1,33 @@
+name: "Echo with added filler words from Whisper"
+# Whisper sometimes adds filler words to transcriptions that weren't in the
+# original speech. If Claude said "The answer is 42" and Whisper transcribes
+# the echo as "So the answer is 42 right", fuzzy matching should still catch it.
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "What is two plus two?"
+    claude:
+      delay: 0.3
+      response: "Two plus two equals four."
+    expected:
+      claude_called: true
+
+  # Whisper adds filler — echo should still be caught
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "So two plus two equals four, right?"
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+termination: exit

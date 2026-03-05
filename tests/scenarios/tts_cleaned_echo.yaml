@@ -1,0 +1,23 @@
+name: "TTS-cleaned text echo not caught"
+# clean_text_for_speech() replaces the wake word with "wake word" before
+# speaking. The mic picks up "wake word is ready" but the canned message
+# set has "Jarvis is ready", so the echo filter doesn't catch it.
+time_scale: 1.0
+
+interactions:
+  # After startup, the mic picks up the startup message with "jarvis"
+  # replaced by "wake word" (as spoken by TTS).
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "wake word is ready."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      # SHOULD be filtered — it's an echo of the startup message
+      echo_filtered: true
+
+termination: exit

@@ -1,0 +1,45 @@
+name: "Echo of first response after second interaction"
+# Two quick interactions: the mic picks up the FIRST response's echo
+# after the second interaction has already completed. The time-based
+# window should still have the first response cached.
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "What color is the sky?"
+    claude:
+      delay: 0.3
+      response: "The sky is typically blue during the day."
+    expected:
+      claude_called: true
+
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "What color is grass?"
+    claude:
+      delay: 0.3
+      response: "Grass is usually green."
+    expected:
+      claude_called: true
+
+  # Echo of the FIRST response arrives late
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "The sky is typically blue during the day."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+termination: exit

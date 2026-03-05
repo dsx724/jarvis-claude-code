@@ -1,0 +1,33 @@
+name: "Similar question not falsely filtered as echo"
+# User asks a question that sounds similar to a recent Claude response
+# but is genuinely different. Must NOT be filtered as echo.
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "What is the capital of France?"
+    claude:
+      delay: 0.3
+      response: "The capital of France is Paris."
+    expected:
+      claude_called: true
+
+  # User asks a similar but different question
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "What is the capital of Spain?"
+    claude:
+      delay: 0.3
+      response: "The capital of Spain is Madrid."
+    expected:
+      claude_called: true
+      echo_filtered: false
+
+termination: exit

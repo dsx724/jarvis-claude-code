@@ -1,0 +1,32 @@
+name: "Very short echo should be caught"
+# Claude gives a one-word or very short response. The mic picks it up.
+# Short strings are harder to match due to len_ratio constraints.
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 15
+    transcription: "Is the server running?"
+    claude:
+      delay: 0.3
+      response: "Yes."
+    expected:
+      claude_called: true
+
+  # Mic picks up the short "Yes"
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 5
+    transcription: "Yes."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+termination: exit

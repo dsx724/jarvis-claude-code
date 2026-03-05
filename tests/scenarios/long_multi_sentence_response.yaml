@@ -1,0 +1,32 @@
+name: "Long multi-sentence response partial echo"
+# Claude gives a very long response (5+ sentences). The mic picks up
+# a sentence from the middle. Sentence splitting should handle this.
+time_scale: 1.0
+
+interactions:
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 20
+    transcription: "Explain how the internet works."
+    claude:
+      delay: 0.3
+      response: "The internet is a global network of computers. Data travels through cables and routers. Packets are sent using TCP and IP protocols. DNS servers translate domain names to IP addresses. Your browser renders the HTML it receives."
+    expected:
+      claude_called: true
+
+  # Mic picks up 4th sentence from the middle
+  - wake_word:
+      silent_chunks: 3
+      trigger_score: 0.95
+    recording:
+      speech_chunks: 10
+    transcription: "DNS servers translate domain names to IP addresses."
+    claude:
+      delay: 0.1
+      response: ""
+    expected:
+      echo_filtered: true
+
+termination: exit
