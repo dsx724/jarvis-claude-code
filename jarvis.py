@@ -35,13 +35,13 @@ import numpy as np
 def _detect_onnx_provider():
     """Detect the best available ONNX Runtime execution provider for this platform.
 
-    Returns (provider_name, device_type) or None if only CPU is available.
+    Returns provider name string (e.g. "OpenVINOExecutionProvider") or None.
     """
     try:
         import onnxruntime as ort
         available = ort.get_available_providers()
         if "OpenVINOExecutionProvider" in available:
-            return ("OpenVINOExecutionProvider", "CPU")
+            return "OpenVINOExecutionProvider"
     except ImportError:
         pass
     return None
@@ -57,12 +57,13 @@ def _openvino_gpu_available():
     except Exception:
         return False
 
-def _patch_onnx_providers():
+def _patch_onnx_providers(device_type="CPU"):
     """Monkey-patch onnxruntime.InferenceSession to inject OpenVINO provider.
 
     Libraries like openwakeword, silero-vad, piper, and kokoro hardcode
     CPUExecutionProvider. This patch transparently upgrades them to use
-    OpenVINO (optimized for Intel CPUs) when available.
+    OpenVINO when available. device_type selects CPU or GPU acceleration.
+    Models incompatible with the provider silently fall back to CPU.
     """
     if _onnx_provider is None:
         return
@@ -72,8 +73,7 @@ def _patch_onnx_providers():
     _OrigSession = ort.InferenceSession
     _OrigOnnxSession = _OrigSession
 
-    provider_name, device_type = _onnx_provider
-    ov_provider = (provider_name, {"device_type": device_type})
+    ov_provider = (_onnx_provider, {"device_type": device_type})
 
     class _PatchedSession(_OrigSession):
         def __init__(self, *args, providers=None, **kwargs):
@@ -105,8 +105,6 @@ def _patch_onnx_providers():
                 super().__init__(*args, providers=fallback, **kwargs)
 
     ort.InferenceSession = _PatchedSession
-
-_patch_onnx_providers()
 
 # ---------------------------------------------------------------------------
 # Load configuration from config/jarvis.ini
@@ -182,6 +180,11 @@ CLAUDE_TIMEOUT = _cfg.getint("claude", "timeout")
 TTS_ENGINE = _cfg.get("tts", "engine")
 TTS_VOICE = _cfg.get("tts", "voice")
 TTS_OPENVINO_DEVICE = _cfg.get("tts", "openvino_device", fallback="CPU").upper()
+
+# Now that config is loaded, apply the ONNX provider monkey-patch with the configured device.
+# Models incompatible with OpenVINO (wake word, VAD) silently fall back to CPU.
+_patch_onnx_providers(device_type=TTS_OPENVINO_DEVICE)
+
 INITIAL_ACK_DELAY = _cfg.getfloat("timing", "initial_ack_delay")
 STILL_WORKING_INTERVAL = _cfg.getint("timing", "still_working_interval")
 ACKNOWLEDGEMENTS = _parse_message_list(_cfg.get("messages", "acknowledgements"))
@@ -321,8 +324,7 @@ def load_models():
     """Load wake word and whisper models."""
     with debug_timer(DEBUG_MODELS, "load_models total"):
         if _onnx_provider:
-            provider_name, device_type = _onnx_provider
-            print(f"ONNX provider: {provider_name} ({device_type})")
+            print(f"ONNX provider: {_onnx_provider} ({TTS_OPENVINO_DEVICE})")
         else:
             print("ONNX provider: CPUExecutionProvider")
         print("Loading wake word model...")
@@ -366,31 +368,13 @@ def load_models():
                     urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx", voice_path)
                     urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx.json", voice_config)
 
-                if (TTS_OPENVINO_DEVICE == "GPU"
-                        and _onnx_provider is not None
-                        and _openvino_gpu_available()):
-                    import onnxruntime as ort
-                    from piper.config import PiperConfig
-                    print("Using OpenVINO GPU for TTS inference...")
-                    gpu_session = _OrigOnnxSession(
-                        str(voice_path),
-                        sess_options=ort.SessionOptions(),
-                        providers=["OpenVINOExecutionProvider"],
-                        provider_options=[{"device_type": "GPU"}],
-                    )
-                    with open(voice_path + ".json", "r", encoding="utf-8") as f:
-                        cfg_dict = json.load(f)
-                    tts_voice = PiperVoice(
-                        config=PiperConfig.from_dict(cfg_dict),
-                        session=gpu_session,
-                    )
+                tts_voice = PiperVoice.load(voice_path)
+                if TTS_OPENVINO_DEVICE == "GPU" and _onnx_provider is not None:
                     # Warmup: first GPU inference compiles the graph (~16s)
                     print("Warming up GPU TTS (first inference)...")
                     for _ in tts_voice.synthesize("warmup"):
                         pass
                     print("GPU TTS ready.")
-                else:
-                    tts_voice = PiperVoice.load(voice_path)
             elif TTS_ENGINE == "kokoro":
                 os.environ["HF_HUB_OFFLINE"] = "1"
                 from kokoro_onnx import Kokoro

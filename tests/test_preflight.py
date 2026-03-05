@@ -415,10 +415,10 @@ def check_onnx_provider():
     if fn is None:
         raise AttributeError("_detect_onnx_provider function not found")
     result = fn()
-    # Should return a tuple (provider, device_type) or None
+    # Should return a provider name string or None
     if result is not None:
-        if not (isinstance(result, tuple) and len(result) == 2):
-            raise ValueError(f"_detect_onnx_provider should return (provider, device) tuple, got {result}")
+        if not isinstance(result, str):
+            raise ValueError(f"_detect_onnx_provider should return provider name string, got {result}")
     # _onnx_provider should exist as module attribute
     if not hasattr(mod, "_onnx_provider"):
         raise AttributeError("_onnx_provider module attribute not found")
