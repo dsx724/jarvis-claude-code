@@ -403,6 +403,24 @@ def check_model_loading():
 
 
 # ---------------------------------------------------------------------------
+# 11. ONNX provider detection
+# ---------------------------------------------------------------------------
+def check_onnx_provider():
+    mod = check_module_import._module
+    fn = getattr(mod, "_detect_onnx_provider", None)
+    if fn is None:
+        raise AttributeError("_detect_onnx_provider function not found")
+    result = fn()
+    # Should return a tuple (provider, device_type) or None
+    if result is not None:
+        if not (isinstance(result, tuple) and len(result) == 2):
+            raise ValueError(f"_detect_onnx_provider should return (provider, device) tuple, got {result}")
+    # _onnx_provider should exist as module attribute
+    if not hasattr(mod, "_onnx_provider"):
+        raise AttributeError("_onnx_provider module attribute not found")
+
+
+# ---------------------------------------------------------------------------
 # Run all checks
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -414,6 +432,7 @@ if __name__ == "__main__":
     check("Kokoro TTS wrapper", check_kokoro_wrapper)
     check("Function signatures", check_function_signatures)
     check("Listener state attributes", check_listener_state)
+    check("ONNX provider detection", check_onnx_provider)
     check("Text cleaning for TTS", check_text_cleaning)
     check("Echo detection", check_echo_detection)
     check("Rate limit parsing", check_rate_limit_parsing)

@@ -29,6 +29,75 @@ warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
 import numpy as np
 
 # ---------------------------------------------------------------------------
+# Platform detection & ONNX Runtime provider injection
+# ---------------------------------------------------------------------------
+
+def _detect_onnx_provider():
+    """Detect the best available ONNX Runtime execution provider for this platform.
+
+    Returns (provider_name, device_type) or None if only CPU is available.
+    """
+    try:
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+        if "OpenVINOExecutionProvider" in available:
+            return ("OpenVINOExecutionProvider", "CPU")
+    except ImportError:
+        pass
+    return None
+
+_onnx_provider = _detect_onnx_provider()
+
+def _patch_onnx_providers():
+    """Monkey-patch onnxruntime.InferenceSession to inject OpenVINO provider.
+
+    Libraries like openwakeword, silero-vad, piper, and kokoro hardcode
+    CPUExecutionProvider. This patch transparently upgrades them to use
+    OpenVINO (optimized for Intel CPUs) when available.
+    """
+    if _onnx_provider is None:
+        return
+
+    import onnxruntime as ort
+    _OrigSession = ort.InferenceSession
+
+    provider_name, device_type = _onnx_provider
+    ov_provider = (provider_name, {"device_type": device_type})
+
+    class _PatchedSession(_OrigSession):
+        def __init__(self, *args, providers=None, **kwargs):
+            orig_providers = providers
+            if providers is not None:
+                patched = []
+                for p in providers:
+                    name = p if isinstance(p, str) else p[0]
+                    if name == "CPUExecutionProvider":
+                        patched.append(ov_provider)
+                        patched.append("CPUExecutionProvider")
+                    else:
+                        patched.append(p)
+                providers = patched
+            else:
+                providers = [ov_provider, "CPUExecutionProvider"]
+            try:
+                # Suppress C++ error messages from onnxruntime during probe
+                _fd = os.dup(2)
+                os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+                try:
+                    super().__init__(*args, providers=providers, **kwargs)
+                finally:
+                    os.dup2(_fd, 2)
+                    os.close(_fd)
+            except Exception:
+                # Model incompatible with OpenVINO — fall back to original providers
+                fallback = orig_providers or ["CPUExecutionProvider"]
+                super().__init__(*args, providers=fallback, **kwargs)
+
+    ort.InferenceSession = _PatchedSession
+
+_patch_onnx_providers()
+
+# ---------------------------------------------------------------------------
 # Load configuration from config/jarvis.ini
 # ---------------------------------------------------------------------------
 import configparser
@@ -239,6 +308,11 @@ def reset_wake_model(wake_model):
 def load_models():
     """Load wake word and whisper models."""
     with debug_timer(DEBUG_MODELS, "load_models total"):
+        if _onnx_provider:
+            provider_name, device_type = _onnx_provider
+            print(f"ONNX provider: {provider_name} ({device_type})")
+        else:
+            print("ONNX provider: CPUExecutionProvider")
         print("Loading wake word model...")
         with debug_timer(DEBUG_MODELS, "load wake word model"):
             from openwakeword.model import Model as WakeModel
