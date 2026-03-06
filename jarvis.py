@@ -187,6 +187,14 @@ TTS_OPENVINO_DEVICE = _cfg.get("tts", "openvino_device", fallback="CPU").upper()
 # Models incompatible with OpenVINO (wake word, VAD) silently fall back to CPU.
 _patch_onnx_providers(device_type=TTS_OPENVINO_DEVICE)
 
+TELEGRAM_TOKEN = _cfg.get("telegram", "bot_token", fallback="")
+_telegram_allowed_raw = _cfg.get("telegram", "allowed_users", fallback="")
+TELEGRAM_ALLOWED_USER_IDS = (
+    {int(uid.strip()) for uid in _telegram_allowed_raw.split(",") if uid.strip()}
+    if _telegram_allowed_raw else set()
+)
+TELEGRAM_VOICE_REPLIES = _cfg.getboolean("telegram", "voice_replies", fallback=True)
+
 INITIAL_ACK_DELAY = _cfg.getfloat("timing", "initial_ack_delay")
 STILL_WORKING_INTERVAL = _cfg.getint("timing", "still_working_interval")
 ACKNOWLEDGEMENTS = _parse_message_list(_cfg.get("messages", "acknowledgements"))
@@ -1057,6 +1065,19 @@ def main():
     threading.Thread(
         target=_always_on_listener, args=(bg_wake_model,), daemon=True
     ).start()
+
+    # Start Telegram bot if configured
+    if TELEGRAM_TOKEN:
+        from telegram_bot import start_telegram_bot
+        start_telegram_bot(
+            token=TELEGRAM_TOKEN,
+            allowed_user_ids=TELEGRAM_ALLOWED_USER_IDS,
+            voice_replies=TELEGRAM_VOICE_REPLIES,
+            whisper_model=whisper_model,
+            tts_voice=tts_voice,
+            send_to_claude_fn=send_to_claude,
+            conversation_logger=conversation_logger,
+        )
 
     stream = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
 
