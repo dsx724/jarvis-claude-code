@@ -23,7 +23,10 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 
 _cfg = configparser.ConfigParser()
-_cfg.read(os.path.join(SCRIPT_DIR, "config", "jarvis.ini"))
+_cfg.read([
+    os.path.join(SCRIPT_DIR, "config", "jarvis.ini"),
+    os.path.join(SCRIPT_DIR, "config", "secrets.ini"),
+])
 
 TELEGRAM_TOKEN = _cfg.get("telegram", "bot_token", fallback="")
 ALLOWED_USERS = _cfg.get("telegram", "allowed_users", fallback="")

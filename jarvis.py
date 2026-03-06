@@ -112,10 +112,11 @@ def _patch_onnx_providers(device_type="CPU"):
 # ---------------------------------------------------------------------------
 import configparser
 
-_ini_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "jarvis.ini")
+_config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config")
 _cfg = configparser.ConfigParser()
-if not _cfg.read(_ini_path):
-    raise FileNotFoundError(f"Config file not found: {_ini_path}")
+if not _cfg.read(os.path.join(_config_dir, "jarvis.ini")):
+    raise FileNotFoundError(f"Config file not found: {os.path.join(_config_dir, 'jarvis.ini')}")
+_cfg.read(os.path.join(_config_dir, "secrets.ini"))
 
 def _parse_message_list(value):
     return [m.strip() for m in value.split(",") if m.strip()]

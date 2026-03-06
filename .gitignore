@@ -1,5 +1,7 @@
 venv/
 voices/*.onnx
+voices/*.onnx.json
 voices/*.bin
 __pycache__/
 logs/
+config/secrets.ini
