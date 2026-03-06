@@ -1,6 +1,6 @@
 #!/bin/bash
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$SCRIPT_DIR/agents/main"
+cd "$SCRIPT_DIR/agents/jarvis"
 
 # Ensure all dependencies are installed before starting
 "$SCRIPT_DIR/setup.sh"
