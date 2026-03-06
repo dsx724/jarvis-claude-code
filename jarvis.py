@@ -62,8 +62,9 @@ def _patch_onnx_providers(device_type="CPU"):
 
     Libraries like openwakeword, silero-vad, piper, and kokoro hardcode
     CPUExecutionProvider. This patch transparently upgrades them to use
-    OpenVINO when available. device_type selects CPU or GPU acceleration.
-    Models incompatible with the provider silently fall back to CPU.
+    OpenVINO when available. device_type selects CPU, GPU, or AUTO
+    acceleration. Models incompatible with the provider silently fall back
+    to CPU.
     """
     if _onnx_provider is None:
         return
