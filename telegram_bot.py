@@ -209,7 +209,23 @@ def start_telegram_bot(token, allowed_user_ids, voice_replies, whisper_model,
             log.info("Allowed Telegram users: %s", allowed_user_ids)
         else:
             log.info("No Telegram user allowlist — accepting messages from everyone")
-        app.run_polling()
+
+        # Can't use run_polling() from a non-main thread because it tries to
+        # register signal handlers. Manage the asyncio loop manually instead.
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(app.initialize())
+            loop.run_until_complete(app.updater.start_polling())
+            loop.run_until_complete(app.start())
+            loop.run_forever()
+        except Exception:
+            log.exception("Telegram bot error")
+        finally:
+            loop.run_until_complete(app.updater.stop())
+            loop.run_until_complete(app.stop())
+            loop.run_until_complete(app.shutdown())
+            loop.close()
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
