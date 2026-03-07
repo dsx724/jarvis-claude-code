@@ -44,18 +44,22 @@ def ogg_to_wav(ogg_bytes):
                 os.unlink(p)
 
 
-def synthesize_ogg(tts_voice, text):
+def synthesize_ogg(tts_voice, text, tts_lock=None):
     """Synthesize text to OGG/Opus bytes for Telegram voice messages."""
     if tts_voice is None:
         return None
 
-    pcm_chunks = []
-    for chunk in tts_voice.synthesize(text):
-        audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
-        pcm_chunks.append(audio_int16.tobytes())
-    pcm_data = b"".join(pcm_chunks)
+    # Serialize TTS access — the ONNX session (especially OpenVINO GPU) is not
+    # thread-safe, so we share a lock with the voice assistant's speak().
+    lock = tts_lock or threading.Lock()
+    with lock:
+        pcm_chunks = []
+        for chunk in tts_voice.synthesize(text):
+            audio_int16 = (chunk.audio_float_array * 32767).astype(np.int16)
+            pcm_chunks.append(audio_int16.tobytes())
+        pcm_data = b"".join(pcm_chunks)
+        sample_rate = tts_voice.config.sample_rate
 
-    sample_rate = tts_voice.config.sample_rate
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as wav_f:
         with wave.open(wav_f, "wb") as wf:
             wf.setnchannels(1)
@@ -83,7 +87,7 @@ def synthesize_ogg(tts_voice, text):
 # ---------------------------------------------------------------------------
 
 def _build_app(token, allowed_user_ids, voice_replies, whisper_model,
-               tts_voice, send_to_claude_fn, conversation_logger):
+               tts_voice, send_to_claude_fn, conversation_logger, tts_lock=None):
     """Build and return a configured Telegram Application."""
     from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 
@@ -121,7 +125,7 @@ def _build_app(token, allowed_user_ids, voice_replies, whisper_model,
 
         if voice_replies and tts_voice is not None:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="record_voice")
-            ogg_data = await loop.run_in_executor(None, synthesize_ogg, tts_voice, response)
+            ogg_data = await loop.run_in_executor(None, synthesize_ogg, tts_voice, response, tts_lock)
             if ogg_data:
                 await update.message.reply_voice(voice=io.BytesIO(ogg_data))
 
@@ -173,7 +177,7 @@ def _build_app(token, allowed_user_ids, voice_replies, whisper_model,
 
         if voice_replies and tts_voice is not None:
             await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="record_voice")
-            ogg_data = await loop.run_in_executor(None, synthesize_ogg, tts_voice, response)
+            ogg_data = await loop.run_in_executor(None, synthesize_ogg, tts_voice, response, tts_lock)
             if ogg_data:
                 await update.message.reply_voice(voice=io.BytesIO(ogg_data))
 
@@ -185,7 +189,8 @@ def _build_app(token, allowed_user_ids, voice_replies, whisper_model,
 
 
 def start_telegram_bot(token, allowed_user_ids, voice_replies, whisper_model,
-                       tts_voice, send_to_claude_fn, conversation_logger):
+                       tts_voice, send_to_claude_fn, conversation_logger,
+                       tts_lock=None):
     """Start the Telegram bot as a background daemon thread.
 
     Called from jarvis.py main() to run alongside the voice interface.
@@ -203,7 +208,8 @@ def start_telegram_bot(token, allowed_user_ids, voice_replies, whisper_model,
 
     def _run():
         app = _build_app(token, allowed_user_ids, voice_replies, whisper_model,
-                         tts_voice, send_to_claude_fn, conversation_logger)
+                         tts_voice, send_to_claude_fn, conversation_logger,
+                         tts_lock=tts_lock)
         log.info("Telegram bot starting...")
         if allowed_user_ids:
             log.info("Allowed Telegram users: %s", allowed_user_ids)
