@@ -96,12 +96,19 @@ def _build_app(token, allowed_user_ids, voice_replies, whisper_model,
             return True
         return user_id in allowed_user_ids
 
+    def _check_reconnected():
+        if _disconnected[0]:
+            log.info("Telegram reconnected.")
+            _disconnected[0] = False
+
     async def handle_start(update, context):
+        _check_reconnected()
         if not check_allowed(update.effective_user.id):
             return
         await update.message.reply_text("Jarvis online. Send me a text or voice message.")
 
     async def handle_text(update, context):
+        _check_reconnected()
         user = update.effective_user
         if not check_allowed(user.id):
             return
@@ -130,6 +137,7 @@ def _build_app(token, allowed_user_ids, voice_replies, whisper_model,
                 await update.message.reply_voice(voice=io.BytesIO(ogg_data))
 
     async def handle_voice(update, context):
+        _check_reconnected()
         user = update.effective_user
         if not check_allowed(user.id):
             return
@@ -181,12 +189,16 @@ def _build_app(token, allowed_user_ids, voice_replies, whisper_model,
             if ogg_data:
                 await update.message.reply_voice(voice=io.BytesIO(ogg_data))
 
+    _disconnected = [False]
+
     async def error_handler(update, context):
         """Handle errors from Telegram bot handlers."""
         from telegram.error import NetworkError, TimedOut
         err = context.error
         if isinstance(err, (NetworkError, TimedOut)):
-            log.warning("Telegram network error (will retry): %s", err)
+            if not _disconnected[0]:
+                log.warning("Telegram connection error: %s", err)
+                _disconnected[0] = True
             return
         log.exception("Telegram bot error: %s", err)
         if update and update.effective_message:
