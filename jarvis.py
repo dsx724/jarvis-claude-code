@@ -1068,13 +1068,36 @@ def main():
 
     # Start Telegram bot if configured
     if TELEGRAM_TOKEN:
+        # Load a separate CPU-only TTS voice for the Telegram thread.
+        # The main TTS voice may use OpenVINO GPU which isn't thread-safe.
+        if TELEGRAM_VOICE_REPLIES:
+            print("Loading TTS model for Telegram (CPU)...")
+            if TTS_ENGINE == "piper":
+                from piper import PiperVoice
+                voice_path = os.path.join(os.path.dirname(__file__), "voices", f"{TTS_VOICE}.onnx")
+                if _OrigOnnxSession is not None:
+                    # Use the unpatched ONNX session to avoid OpenVINO GPU
+                    import onnxruntime as ort
+                    _patched = ort.InferenceSession
+                    ort.InferenceSession = _OrigOnnxSession
+                    telegram_tts = PiperVoice.load(voice_path)
+                    ort.InferenceSession = _patched
+                else:
+                    telegram_tts = PiperVoice.load(voice_path)
+            elif TTS_ENGINE == "kokoro":
+                telegram_tts = tts_voice  # Kokoro is CPU-only anyway
+            else:
+                telegram_tts = None
+        else:
+            telegram_tts = None
+
         from telegram_bot import start_telegram_bot
         start_telegram_bot(
             token=TELEGRAM_TOKEN,
             allowed_user_ids=TELEGRAM_ALLOWED_USER_IDS,
             voice_replies=TELEGRAM_VOICE_REPLIES,
             whisper_model=whisper_model,
-            tts_voice=tts_voice,
+            tts_voice=telegram_tts,
             send_to_claude_fn=send_to_claude,
             conversation_logger=conversation_logger,
         )
