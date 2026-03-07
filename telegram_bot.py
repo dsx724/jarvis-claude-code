@@ -181,10 +181,27 @@ def _build_app(token, allowed_user_ids, voice_replies, whisper_model,
             if ogg_data:
                 await update.message.reply_voice(voice=io.BytesIO(ogg_data))
 
+    async def error_handler(update, context):
+        """Handle errors from Telegram bot handlers."""
+        from telegram.error import NetworkError, TimedOut
+        err = context.error
+        if isinstance(err, (NetworkError, TimedOut)):
+            log.warning("Telegram network error (will retry): %s", err)
+            return
+        log.exception("Telegram bot error: %s", err)
+        if update and update.effective_message:
+            try:
+                await update.effective_message.reply_text(
+                    "Sorry, something went wrong processing your request."
+                )
+            except Exception:
+                pass
+
     app = ApplicationBuilder().token(token).build()
     app.add_handler(CommandHandler("start", handle_start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_error_handler(error_handler)
     return app
 
 
