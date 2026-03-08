@@ -184,9 +184,11 @@ TTS_VOICE = _cfg.get("tts", "voice")
 TTS_OPENVINO_DEVICE = _cfg.get("tts", "openvino_device", fallback="CPU").upper()
 
 # Apply ONNX provider patch with CPU for general models (wake word, VAD, STT).
-# GPU patch is applied temporarily during TTS loading only, since OpenVINO GPU
-# produces incorrect results for some models even when the fallback doesn't throw.
-_patch_onnx_providers(device_type="CPU")
+# GPU/AUTO patch is applied temporarily during TTS loading only, since OpenVINO
+# GPU produces subtly incorrect numerical results in openwakeword's melspectrogram
+# and embedding models, breaking wake word detection.
+if TTS_OPENVINO_DEVICE == "CPU":
+    _patch_onnx_providers(device_type="CPU")
 
 TELEGRAM_TOKEN = _cfg.get("telegram", "bot_token", fallback="")
 _telegram_allowed_raw = _cfg.get("telegram", "allowed_users", fallback="")
@@ -406,9 +408,10 @@ def load_models():
             else:
                 raise ValueError(f"Unsupported TTS engine: {TTS_ENGINE}")
 
-            # Restore CPU provider for any future ONNX sessions
-            if TTS_OPENVINO_DEVICE != "CPU" and _onnx_provider is not None:
-                _patch_onnx_providers(device_type="CPU")
+            # Restore original ONNX session class so future sessions aren't patched
+            if TTS_OPENVINO_DEVICE != "CPU" and _OrigOnnxSession is not None:
+                import onnxruntime as ort
+                ort.InferenceSession = _OrigOnnxSession
 
     print("All models loaded.")
     return wake_model, whisper_model, tts_voice, vad_model
