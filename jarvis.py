@@ -183,9 +183,10 @@ TTS_ENGINE = _cfg.get("tts", "engine")
 TTS_VOICE = _cfg.get("tts", "voice")
 TTS_OPENVINO_DEVICE = _cfg.get("tts", "openvino_device", fallback="CPU").upper()
 
-# Now that config is loaded, apply the ONNX provider monkey-patch with the configured device.
-# Models incompatible with OpenVINO (wake word, VAD) silently fall back to CPU.
-_patch_onnx_providers(device_type=TTS_OPENVINO_DEVICE)
+# Apply ONNX provider patch with CPU for general models (wake word, VAD, STT).
+# GPU patch is applied temporarily during TTS loading only, since OpenVINO GPU
+# produces incorrect results for some models even when the fallback doesn't throw.
+_patch_onnx_providers(device_type="CPU")
 
 TELEGRAM_TOKEN = _cfg.get("telegram", "bot_token", fallback="")
 _telegram_allowed_raw = _cfg.get("telegram", "allowed_users", fallback="")
@@ -357,6 +358,10 @@ def load_models():
 
         print(f"Loading TTS model ({TTS_ENGINE}: {TTS_VOICE})...")
         with debug_timer(DEBUG_MODELS, "load TTS model"):
+            # Temporarily switch to GPU provider for TTS loading if configured.
+            if TTS_OPENVINO_DEVICE != "CPU" and _onnx_provider is not None:
+                _patch_onnx_providers(device_type=TTS_OPENVINO_DEVICE)
+
             if TTS_ENGINE == "piper":
                 from piper import PiperVoice
                 # Download voice if needed
@@ -379,7 +384,7 @@ def load_models():
                     urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx.json", voice_config)
 
                 tts_voice = PiperVoice.load(voice_path)
-                if TTS_OPENVINO_DEVICE == "GPU" and _onnx_provider is not None:
+                if TTS_OPENVINO_DEVICE != "CPU" and _onnx_provider is not None:
                     # Warmup: first GPU inference compiles the graph (~16s)
                     print("Warming up GPU TTS (first inference)...")
                     for _ in tts_voice.synthesize("warmup"):
@@ -400,6 +405,10 @@ def load_models():
                 tts_voice = KokoroTTS(Kokoro(model_path, voices_path), TTS_VOICE)
             else:
                 raise ValueError(f"Unsupported TTS engine: {TTS_ENGINE}")
+
+            # Restore CPU provider for any future ONNX sessions
+            if TTS_OPENVINO_DEVICE != "CPU" and _onnx_provider is not None:
+                _patch_onnx_providers(device_type="CPU")
 
     print("All models loaded.")
     return wake_model, whisper_model, tts_voice, vad_model
