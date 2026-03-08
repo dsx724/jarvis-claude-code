@@ -17,6 +17,11 @@ import wave
 import numpy as np
 
 log = logging.getLogger("jarvis.telegram")
+if not log.handlers:
+    _sh = logging.StreamHandler()
+    _sh.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(message)s"))
+    log.addHandler(_sh)
+    log.setLevel(logging.INFO)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
