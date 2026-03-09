@@ -241,10 +241,11 @@ def start_telegram_bot(token, allowed_user_ids, voice_replies, whisper_model,
         return
 
     def _run():
-        # Suppress the library's own verbose traceback logging for network errors.
+        # Suppress the library's verbose traceback logging for network errors.
         # Our error_handler handles these with clean one-line messages instead.
-        logging.getLogger("telegram.ext._utils.networkloop").setLevel(logging.CRITICAL)
+        logging.getLogger("telegram").setLevel(logging.CRITICAL)
         logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
         app = _build_app(token, allowed_user_ids, voice_replies, whisper_model,
                          tts_voice, send_to_claude_fn, conversation_logger,
