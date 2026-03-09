@@ -75,6 +75,7 @@ Sends transcribed text to `claude` CLI via `subprocess.Popen` with `--output-for
 
 ### Built-in Commands
 Handled locally without calling Claude:
+- **shutdown** / **shut down** / **go to sleep** / **goodnight**: Exits with code 0 (clean stop, no restart).
 - **restart** / **reboot**: Exits with code 42 (systemd restarts).
 - **revert**: Runs `git revert HEAD` and restarts.
 - **stop** / **cancel** / **never mind** / **nevermind**: Kills Claude mid-processing (only active during Claude wait loop).

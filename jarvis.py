@@ -586,6 +586,7 @@ BUILTIN_RESPONSES = [
     "All queued prompts have been processed.",
     "Stopped.",
     "Queued. I'll handle that after this task.",
+    "Shutting down. Goodbye.",
 ]
 
 # Pre-normalized set of all canned messages for fast echo lookup
@@ -1237,6 +1238,14 @@ def main():
         # and would otherwise be incorrectly filtered as self-echo.
         text_lower = text.lower().strip().rstrip(".")
         wn_lower = WAKE_WORD_NAME.lower()
+        if text_lower in ("shutdown", "shut down", f"shutdown {wn_lower}",
+                          f"shut down {wn_lower}", "turn yourself off",
+                          "go to sleep", "goodnight", "good night"):
+            print(f"Transcribed: {text}")
+            print("Built-in command: shutdown")
+            speak(tts_voice, "Shutting down. Goodbye.")
+            os._exit(0)
+
         if text_lower in ("restart", "restart yourself", f"restart {wn_lower}",
                           "please restart", "reboot", "reboot yourself"):
             print(f"Transcribed: {text}")
