@@ -105,8 +105,9 @@ def check_config_values():
             errors.append(f"{name} should be {expected}, got {type(val)}")
 
     # TTS_OPENVINO_DEVICE validation
-    if mod.TTS_OPENVINO_DEVICE not in ("CPU", "GPU"):
-        errors.append(f"TTS_OPENVINO_DEVICE={mod.TTS_OPENVINO_DEVICE} not in (CPU, GPU)")
+    import re as _re2
+    if not _re2.match(r'^(CPU|GPU(\.\d+)?)$', mod.TTS_OPENVINO_DEVICE):
+        errors.append(f"TTS_OPENVINO_DEVICE={mod.TTS_OPENVINO_DEVICE} invalid format (expected cpu, gpu, or gpu.N)")
 
     # STT_BACKEND validation
     supported_stt_backends = ("faster-whisper", "openvino", "auto")
@@ -483,6 +484,10 @@ def check_stt_functions():
         raise FileNotFoundError(f"_generate_bench_audio did not create file: {path}")
     _os.unlink(path)
 
+    # _validate_openvino_device should always exist
+    if not hasattr(mod, "_validate_openvino_device"):
+        raise AttributeError("Missing function: _validate_openvino_device")
+
     # OpenVINO-specific functions only checked when available
     if mod._HAS_OPENVINO:
         for fn_name in ("_resolve_stt_openvino_device", "_ensure_openvino_cache",
@@ -494,11 +499,79 @@ def check_stt_functions():
 
 
 # ---------------------------------------------------------------------------
+# 12. System dependencies
+# ---------------------------------------------------------------------------
+def check_system_deps():
+    import shutil
+    import ctypes
+    errors = []
+
+    # claude CLI must be on PATH
+    if not shutil.which("claude"):
+        errors.append("'claude' CLI not found on PATH — install Claude Code")
+
+    # PulseAudio library must be loadable
+    try:
+        ctypes.cdll.LoadLibrary("libpulse-simple.so.0")
+    except OSError:
+        errors.append("libpulse-simple.so.0 not found — install libpulse0")
+
+    # ffmpeg needed for audio processing
+    if not shutil.which("ffmpeg"):
+        errors.append("'ffmpeg' not found on PATH — install ffmpeg")
+
+    if errors:
+        raise RuntimeError("; ".join(errors))
+
+
+# ---------------------------------------------------------------------------
+# 13. Audio devices available
+# ---------------------------------------------------------------------------
+def check_audio_devices():
+    mod = check_module_import._module
+    warnings = []
+    # Try opening a recording stream
+    try:
+        rec = mod.PulseRecorder(rate=mod.RATE, channels=mod.CHANNELS, chunk=mod.CHUNK)
+        rec.close()
+    except RuntimeError as e:
+        warnings.append(f"No audio input device: {e}")
+
+    # Try opening a playback stream
+    try:
+        player = mod.PulsePlayer(rate=mod.RATE)
+        player.close()
+    except RuntimeError as e:
+        warnings.append(f"No audio output device: {e}")
+
+    if warnings:
+        # Audio device issues are environment problems, not code bugs.
+        # Print warning but don't fail preflight.
+        for w in warnings:
+            print(f"         WARNING: {w}")
+
+
+# ---------------------------------------------------------------------------
+# 14. Wake word model file exists
+# ---------------------------------------------------------------------------
+def check_wake_word_model():
+    mod = check_module_import._module
+    import openwakeword
+    model_path = os.path.join(
+        os.path.dirname(openwakeword.__file__),
+        "resources", "models", f"hey_{mod.WAKE_WORD_NAME}_v0.1.onnx"
+    )
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Wake word model not found: {model_path}")
+
+
+# ---------------------------------------------------------------------------
 # Run all checks
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     print("Jarvis preflight checks:")
     check("Syntax validation", check_syntax)
+    check("System dependencies", check_system_deps)
     check("Module import", check_module_import)
     check("Config import", check_config_import)
     check("Config value validation", check_config_values)
@@ -511,6 +584,8 @@ if __name__ == "__main__":
     check("Echo detection", check_echo_detection)
     check("Rate limit parsing", check_rate_limit_parsing)
     check("Queue operations", check_queue_operations)
+    check("Wake word model", check_wake_word_model)
+    check("Audio devices", check_audio_devices)
     check("Model loading", check_model_loading)
 
     print(f"\nResults: {passed} passed, {failed} failed")
