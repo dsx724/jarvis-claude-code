@@ -60,6 +60,21 @@ for i in "${!PY_PACKAGES[@]}"; do
 done
 
 if [ ${#missing_pip[@]} -gt 0 ]; then
+    # Warn about model licenses bundled with packages
+    for pkg in "${missing_pip[@]}"; do
+        case "$pkg" in
+            openwakeword)
+                echo "NOTE: openwakeword includes pre-trained models licensed CC BY-NC-SA 4.0"
+                echo "      (non-commercial use only). See https://github.com/dscripka/openWakeWord"
+                ;;
+            piper-tts)
+                echo "NOTE: piper-tts is licensed GPL-3.0-or-later."
+                echo "      Piper voice models have their own licenses — some are CC BY-NC-SA 4.0"
+                echo "      (non-commercial). Check voice license before redistributing."
+                echo "      See https://huggingface.co/rhasspy/piper-voices"
+                ;;
+        esac
+    done
     echo "Installing Python packages: ${missing_pip[*]}"
     pip install --upgrade pip
     pip install "${missing_pip[@]}"

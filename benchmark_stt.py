@@ -20,6 +20,9 @@ sys.path.insert(0, SCRIPT_DIR)
 # Suppress noisy warnings
 import warnings
 warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
+warnings.filterwarnings("ignore", message=".*__array__.*doesn't accept a copy keyword.*")
+import transformers
+transformers.logging.set_verbosity_error()
 
 
 def main():

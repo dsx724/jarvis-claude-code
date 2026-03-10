@@ -25,6 +25,13 @@ import zoneinfo
 # Suppress onnxruntime CUDA warning
 import warnings
 warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
+warnings.filterwarnings("ignore", message=".*__array__.*doesn't accept a copy keyword.*")
+
+# Suppress transformers deprecation messages (forced_decoder_ids,
+# return_token_timestamps, generation_config defaults, logits processor).
+# These come from the transformers custom logger, not the warnings module.
+import transformers
+transformers.logging.set_verbosity_error()
 
 import numpy as np
 
@@ -505,6 +512,7 @@ SILENCE_RATIO = _cfg.getfloat("vad", "silence_ratio")
 MAX_RECORD_SECONDS = _cfg.getint("vad", "max_record_seconds")
 WAKE_WORD_NAME = _cfg.get("wake_word", "name")
 WAKE_WORD_THRESHOLD = _cfg.getfloat("wake_word", "threshold")
+WAKE_WORD_MODEL_PATH = _cfg.get("wake_word", "model_path", fallback="")
 STT_MODEL = _cfg.get("stt", "model")
 STT_BACKEND = _cfg.get("stt", "backend", fallback="faster-whisper").lower()
 STT_OPENVINO_DEVICE = _cfg.get("stt", "openvino_device", fallback="AUTO").upper()
@@ -519,6 +527,8 @@ TTS_OPENVINO_DEVICE = _cfg.get("tts", "openvino_device", fallback="CPU").upper()
 # and embedding models, breaking wake word detection.
 if TTS_OPENVINO_DEVICE == "CPU":
     _patch_onnx_providers(device_type="CPU")
+
+COMMERCIAL_USE = _cfg.getboolean("licensing", "commercial_use", fallback=False)
 
 TELEGRAM_TOKEN = _cfg.get("telegram", "bot_token", fallback="")
 _telegram_allowed_raw = _cfg.get("telegram", "allowed_users", fallback="")
@@ -540,6 +550,43 @@ def _apply_wake_word_name(messages):
 
 STARTUP_MESSAGES = _apply_wake_word_name(_parse_message_list(_cfg.get("messages", "startup")))
 SHUTDOWN_MESSAGES = _apply_wake_word_name(_parse_message_list(_cfg.get("messages", "shutdown")))
+
+# Piper voices known to have non-commercial licenses (CC BY-NC-SA 4.0 or research-only)
+_NC_PIPER_VOICES = {
+    "en_US-lessac-low", "en_US-lessac-medium", "en_US-lessac-high",
+    "en_US-amy-low", "en_US-amy-medium",
+    "en_US-ryan-low", "en_US-ryan-medium", "en_US-ryan-high",
+}
+
+
+def _validate_commercial_use():
+    """Check that all components have commercially-compatible licenses."""
+    errors = []
+
+    # Wake word: bundled openwakeword models are CC BY-NC-SA 4.0
+    if not WAKE_WORD_MODEL_PATH:
+        errors.append(
+            "Wake word: bundled openwakeword models are CC BY-NC-SA 4.0 (non-commercial).\n"
+            "  Set [wake_word] model_path to a custom-trained model for commercial use."
+        )
+
+    # TTS voice license check
+    if TTS_ENGINE == "piper" and TTS_VOICE in _NC_PIPER_VOICES:
+        errors.append(
+            f"TTS voice '{TTS_VOICE}' has a non-commercial license.\n"
+            f"  Use a [commercial] voice (see jarvis.ini) or switch to kokoro engine."
+        )
+
+    if errors:
+        print("\n=== COMMERCIAL USE LICENSE CHECK FAILED ===")
+        for err in errors:
+            print(f"  * {err}")
+        print("Set [licensing] commercial_use = false to disable this check.\n")
+        sys.exit(1)
+
+
+if COMMERCIAL_USE:
+    _validate_commercial_use()
 
 # PulseAudio simple API via ctypes
 try:
@@ -736,10 +783,13 @@ def load_models():
         print("Loading wake word model...")
         with debug_timer(DEBUG_MODELS, "load wake word model"):
             from openwakeword.model import Model as WakeModel
-            wake_model = WakeModel(wakeword_model_paths=[
-                os.path.join(os.path.dirname(__import__('openwakeword').__file__),
-                             "resources", "models", f"hey_{WAKE_WORD_NAME}_v0.1.onnx")
-            ])
+            if WAKE_WORD_MODEL_PATH:
+                _ww_path = WAKE_WORD_MODEL_PATH
+            else:
+                _ww_path = os.path.join(
+                    os.path.dirname(__import__('openwakeword').__file__),
+                    "resources", "models", f"hey_{WAKE_WORD_NAME}_v0.1.onnx")
+            wake_model = WakeModel(wakeword_model_paths=[_ww_path])
 
         # Resolve backend (auto picks the fastest via benchmark)
         stt_backend = STT_BACKEND
@@ -798,6 +848,9 @@ def load_models():
                 if not os.path.exists(voice_path):
                     os.makedirs(voice_dir, exist_ok=True)
                     print(f"Downloading TTS voice ({TTS_VOICE})...")
+                    print(f"NOTE: Piper voice '{TTS_VOICE}' may be under a non-commercial license")
+                    print(f"      (e.g. CC BY-NC-SA 4.0). Check the model card before redistributing.")
+                    print(f"      See https://huggingface.co/rhasspy/piper-voices")
                     import urllib.request
                     import urllib.error
                     # Parse voice name: en_US-lessac-medium -> en/en_US/lessac/medium
@@ -1522,10 +1575,13 @@ def main():
     # wake_model.predict() has internal state (sliding window) — two threads
     # calling it concurrently corrupts state, so each thread needs its own.
     from openwakeword.model import Model as WakeModel
-    bg_wake_model = WakeModel(wakeword_model_paths=[
-        os.path.join(os.path.dirname(__import__('openwakeword').__file__),
-                     "resources", "models", f"hey_{WAKE_WORD_NAME}_v0.1.onnx")
-    ])
+    if WAKE_WORD_MODEL_PATH:
+        _bg_ww_path = WAKE_WORD_MODEL_PATH
+    else:
+        _bg_ww_path = os.path.join(
+            os.path.dirname(__import__('openwakeword').__file__),
+            "resources", "models", f"hey_{WAKE_WORD_NAME}_v0.1.onnx")
+    bg_wake_model = WakeModel(wakeword_model_paths=[_bg_ww_path])
 
     # Start always-on background listener
     threading.Thread(

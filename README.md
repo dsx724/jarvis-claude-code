@@ -62,6 +62,36 @@ These are handled locally without calling Claude:
 | queue / show queue | Lists queued prompts |
 | clear queue / empty queue | Clears the prompt queue |
 
+## Licensing
+
+Jarvis source code is licensed under **GPL-3.0** (see [LICENSE](LICENSE)). GPL-3.0 allows commercial use — it only requires sharing source code when you distribute the software to others.
+
+Some **pre-trained models** bundled with or downloaded by Jarvis have separate, more restrictive licenses:
+
+| Component | License | Commercial use? |
+|---|---|---|
+| Jarvis source code | GPL-3.0 | Yes |
+| piper-tts (library) | GPL-3.0 | Yes |
+| Kokoro TTS model & voices | Apache-2.0 | Yes |
+| OpenAI Whisper model | MIT | Yes |
+| Silero VAD model | MIT | Yes |
+| openwakeword (code) | Apache-2.0 | Yes |
+| openwakeword pre-trained models | CC BY-NC-SA 4.0 | **No** |
+| Piper voices (varies by voice) | See `jarvis.ini` | Some yes, some no |
+
+### Commercial use
+
+To use Jarvis commercially, set `commercial_use = true` in `config/jarvis.ini` under `[licensing]`. Jarvis will validate at startup that all components have commercially-compatible licenses and exit with clear errors if not.
+
+You will need to:
+
+1. **TTS** — use the `kokoro` engine (Apache-2.0), or a Piper voice marked `[commercial]` in `jarvis.ini` (e.g. `en_US-ljspeech-medium`)
+2. **Wake word** — provide a custom-trained model via `[wake_word] model_path` (the openwakeword training code is Apache-2.0, so models you train are yours)
+
+### Contributing
+
+Contributions are welcome. By submitting a pull request, you agree to the [Contributor License Agreement](CLA.md), which grants the maintainer the right to use your contribution under both the GPL-3.0 public license and a separate commercial license.
+
 ## Project structure
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed internals.
