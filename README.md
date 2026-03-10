@@ -32,7 +32,7 @@ allowed_users = 123456789,987654321
 ```
 
 - `bot_token` — get one from [@BotFather](https://t.me/BotFather) on Telegram
-- `allowed_users` — comma-separated Telegram user IDs that are allowed to interact with the bot (leave empty to allow all)
+- `allowed_users` — comma-separated Telegram user IDs that are allowed to interact with the bot. Set to `all` to allow everyone. If omitted or empty, the bot rejects all messages.
 
 ## Running
 
@@ -60,8 +60,11 @@ These are handled locally without calling Claude:
 | revert | Reverts the last git commit and restarts |
 | upgrade / update / git pull | Pulls latest changes and restarts |
 | stop / cancel / never mind | Kills Claude mid-processing |
+| mute / be quiet | Mutes Jarvis until unmuted |
+| unmute | Resumes normal operation |
 | queue / show queue | Lists queued prompts |
 | clear queue / empty queue | Clears the prompt queue |
+| builtins / list commands | Lists all built-in commands |
 
 ## Licensing
 

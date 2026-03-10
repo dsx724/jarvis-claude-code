@@ -531,11 +531,14 @@ if TTS_OPENVINO_DEVICE == "CPU":
 COMMERCIAL_USE = _cfg.getboolean("licensing", "commercial_use", fallback=False)
 
 TELEGRAM_TOKEN = _cfg.get("telegram", "bot_token", fallback="")
-_telegram_allowed_raw = _cfg.get("telegram", "allowed_users", fallback="")
-TELEGRAM_ALLOWED_USER_IDS = (
-    {int(uid.strip()) for uid in _telegram_allowed_raw.split(",") if uid.strip()}
-    if _telegram_allowed_raw else set()
-)
+_telegram_allowed_raw = _cfg.get("telegram", "allowed_users", fallback="").strip()
+if _telegram_allowed_raw.lower() == "all":
+    TELEGRAM_ALLOWED_USER_IDS = "all"
+else:
+    TELEGRAM_ALLOWED_USER_IDS = (
+        {int(uid.strip()) for uid in _telegram_allowed_raw.split(",") if uid.strip()}
+        if _telegram_allowed_raw else set()
+    )
 TELEGRAM_VOICE_REPLIES = _cfg.getboolean("telegram", "voice_replies", fallback=True)
 
 INITIAL_ACK_DELAY = _cfg.getfloat("timing", "initial_ack_delay")
@@ -2042,8 +2045,7 @@ def main():
             speak(tts_voice, "Updated. Restarting now.")
             os._exit(42)
 
-        if text_lower in ("queue", "show queue", "whats in the queue",
-                          "what's in the queue", "list queue", "pending prompts"):
+        if text_lower in ("queue", "cue", "q"):
             print(f"Transcribed: {text}")
             print("Built-in command: queue")
             q = queue_list()
@@ -2056,7 +2058,7 @@ def main():
                 speak_and_clear(" ".join(parts))
             continue
 
-        if text_lower in ("clear queue", "empty queue", "clear the queue"):
+        if text_lower in ("clear queue", "clear cue", "clear q"):
             print(f"Transcribed: {text}")
             print("Built-in command: clear queue")
             global _queue_timer

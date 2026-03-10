@@ -97,8 +97,10 @@ def _build_app(token, allowed_user_ids, voice_replies, whisper_model,
     from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
 
     def check_allowed(user_id):
-        if not allowed_user_ids:
+        if allowed_user_ids == "all":
             return True
+        if not allowed_user_ids:
+            return False
         return user_id in allowed_user_ids
 
     def _check_reconnected():
@@ -251,10 +253,12 @@ def start_telegram_bot(token, allowed_user_ids, voice_replies, whisper_model,
                          tts_voice, send_to_claude_fn, conversation_logger,
                          tts_lock=tts_lock)
         log.info("Telegram bot starting...")
-        if allowed_user_ids:
+        if allowed_user_ids == "all":
+            log.info("Telegram bot accepting messages from everyone")
+        elif allowed_user_ids:
             log.info("Allowed Telegram users: %s", allowed_user_ids)
         else:
-            log.info("No Telegram user allowlist — accepting messages from everyone")
+            log.info("No allowed_users configured — Telegram bot will reject all messages")
 
         # Can't use run_polling() from a non-main thread because it tries to
         # register signal handlers. Manage the asyncio loop manually instead.
@@ -327,8 +331,11 @@ if __name__ == "__main__":
         print("Get a token from @BotFather on Telegram.")
         raise SystemExit(1)
 
-    allowed_raw = _cfg.get("telegram", "allowed_users", fallback="")
-    allowed_ids = {int(uid.strip()) for uid in allowed_raw.split(",") if uid.strip()} if allowed_raw else set()
+    allowed_raw = _cfg.get("telegram", "allowed_users", fallback="").strip()
+    if allowed_raw.lower() == "all":
+        allowed_ids = "all"
+    else:
+        allowed_ids = {int(uid.strip()) for uid in allowed_raw.split(",") if uid.strip()} if allowed_raw else set()
     voice_replies = _cfg.getboolean("telegram", "voice_replies", fallback=True)
 
     stt_model = _cfg.get("stt", "model")
