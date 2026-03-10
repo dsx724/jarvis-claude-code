@@ -467,7 +467,9 @@ def _get_debug_logger():
         _debug_logger = logging.getLogger("jarvis.debug")
         _debug_logger.setLevel(logging.DEBUG)
         _script_dir = os.path.dirname(os.path.abspath(__file__))
-        handler = logging.FileHandler(os.path.join(_script_dir, "logs", "debug.log"))
+        _debug_logs_dir = os.path.join(_script_dir, "logs")
+        os.makedirs(_debug_logs_dir, exist_ok=True)
+        handler = logging.FileHandler(os.path.join(_debug_logs_dir, "debug.log"))
         handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
         _debug_logger.addHandler(handler)
     return _debug_logger
@@ -540,7 +542,11 @@ STARTUP_MESSAGES = _apply_wake_word_name(_parse_message_list(_cfg.get("messages"
 SHUTDOWN_MESSAGES = _apply_wake_word_name(_parse_message_list(_cfg.get("messages", "shutdown")))
 
 # PulseAudio simple API via ctypes
-_pulse_simple = ctypes.cdll.LoadLibrary("libpulse-simple.so.0")
+try:
+    _pulse_simple = ctypes.cdll.LoadLibrary("libpulse-simple.so.0")
+except OSError:
+    print("ERROR: libpulse-simple.so.0 not found. Install PulseAudio: sudo apt-get install libpulse0")
+    sys.exit(1)
 
 # pa_sample_format_t: PA_SAMPLE_S16LE = 3
 # pa_stream_direction_t: PA_STREAM_RECORD = 2
@@ -793,6 +799,7 @@ def load_models():
                     os.makedirs(voice_dir, exist_ok=True)
                     print(f"Downloading TTS voice ({TTS_VOICE})...")
                     import urllib.request
+                    import urllib.error
                     # Parse voice name: en_US-lessac-medium -> en/en_US/lessac/medium
                     parts = TTS_VOICE.split("-")
                     lang = parts[0]                    # en_US
@@ -800,8 +807,15 @@ def load_models():
                     dataset = parts[1]                 # lessac
                     quality = parts[2]                 # medium
                     base = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang_family}/{lang}/{dataset}/{quality}"
-                    urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx", voice_path)
-                    urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx.json", voice_config)
+                    try:
+                        urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx", voice_path)
+                        urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx.json", voice_config)
+                    except (urllib.error.URLError, OSError) as e:
+                        # Clean up partial downloads
+                        for f in (voice_path, voice_config):
+                            if os.path.exists(f):
+                                os.unlink(f)
+                        raise RuntimeError(f"Failed to download TTS voice '{TTS_VOICE}': {e}") from e
 
                 tts_voice = PiperVoice.load(voice_path)
                 if tts_device != "CPU" and _onnx_provider is not None:
@@ -859,7 +873,11 @@ def record_until_silence(stream, vad_model, pre_roll=None):
     window = deque(maxlen=silence_window_size)
 
     for chunk_idx in range(int(MAX_RECORD_SECONDS * chunks_per_second)):
-        data = stream.read(VAD_CHUNK, exception_on_overflow=False)
+        try:
+            data = stream.read(VAD_CHUNK, exception_on_overflow=False)
+        except RuntimeError:
+            print("ERROR: Audio device disconnected during recording.")
+            break
         frames.append(data)
 
         audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
@@ -1102,10 +1120,14 @@ def load_queue():
 
 def save_queue(queue):
     """Atomically write the queue to disk."""
-    tmp = QUEUE_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(queue, f)
-    os.replace(tmp, QUEUE_FILE)
+    try:
+        os.makedirs(os.path.dirname(QUEUE_FILE), exist_ok=True)
+        tmp = QUEUE_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(queue, f)
+        os.replace(tmp, QUEUE_FILE)
+    except OSError as e:
+        print(f"WARNING: Could not save queue: {e}")
 
 
 def queue_add(prompt, position=0):
@@ -1316,7 +1338,11 @@ def _always_on_listener(wake_model):
         os._exit(0)
     try:
         while True:
-            data = listener.read(CHUNK, exception_on_overflow=False)
+            try:
+                data = listener.read(CHUNK, exception_on_overflow=False)
+            except RuntimeError:
+                print("ERROR: Listener audio device disconnected.")
+                os._exit(0)
 
             if _listener_needs_reset:
                 reset_wake_model(wake_model)
@@ -1356,15 +1382,18 @@ SESSION_ID = str(uuid.uuid4())
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+_logs_dir = os.path.join(SCRIPT_DIR, "logs")
+os.makedirs(_logs_dir, exist_ok=True)
+
 error_logger = logging.getLogger("jarvis.error")
 error_logger.setLevel(logging.ERROR)
-_error_handler = logging.FileHandler(os.path.join(SCRIPT_DIR, "logs", "error.log"))
+_error_handler = logging.FileHandler(os.path.join(_logs_dir, "error.log"))
 _error_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 error_logger.addHandler(_error_handler)
 
 conversation_logger = logging.getLogger("jarvis.conversation")
 conversation_logger.setLevel(logging.INFO)
-_conv_handler = logging.FileHandler(os.path.join(SCRIPT_DIR, "logs", "conversation.log"))
+_conv_handler = logging.FileHandler(os.path.join(_logs_dir, "conversation.log"))
 _conv_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 conversation_logger.addHandler(_conv_handler)
 
@@ -1597,7 +1626,12 @@ def main():
     while True:
         if not skip_wake_word:
             # Read audio chunk for wake word detection
-            data = stream.read(CHUNK, exception_on_overflow=False)
+            try:
+                data = stream.read(CHUNK, exception_on_overflow=False)
+            except RuntimeError:
+                print("ERROR: Audio device disconnected.")
+                print("Exiting — check PulseAudio/PipeWire configuration.")
+                os._exit(0)
             pre_roll_buf.append(data)
             audio_data = np.frombuffer(data, dtype=np.int16)
 
