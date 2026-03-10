@@ -72,6 +72,33 @@ def _openvino_gpu_available():
         return False
 
 
+def _validate_openvino_device(device):
+    """Validate that an OpenVINO device exists. Returns the device if valid, or
+    falls back to CPU with a warning if the device is not available."""
+    if device == "CPU":
+        return device
+    try:
+        from openvino import Core
+        available = Core().available_devices
+        # Bare "GPU" — resolve to the last (typically discrete/fastest) GPU
+        if device == "GPU":
+            ov_gpus = [d for b, d in _detect_gpu_devices() if b == "openvino"]
+            if ov_gpus:
+                resolved = ov_gpus[-1]
+                print(f"GPU resolved to {resolved}")
+                return resolved
+            print(f"WARNING: No OpenVINO GPU devices found. Falling back to CPU.")
+            return "CPU"
+        # Specific GPU.N — check it exists
+        if device in available:
+            return device
+        print(f"WARNING: OpenVINO device '{device}' not found (available: {', '.join(available)}). Falling back to CPU.")
+        return "CPU"
+    except Exception:
+        print(f"WARNING: Could not query OpenVINO devices. Falling back to CPU.")
+        return "CPU"
+
+
 def _detect_gpu_devices():
     """Detect available GPU devices for STT acceleration.
 
@@ -642,9 +669,11 @@ def _load_openvino_whisper(model_name, device=None):
     from optimum.intel import OVModelForSpeechSeq2Seq
     from transformers import AutoProcessor, pipeline
 
-    # Resolve device
+    # Resolve device: AUTO benchmarks all devices (CPU+GPU) to find the best
     if device is None or device == "AUTO":
         device = _resolve_stt_openvino_device(model_name)
+    else:
+        device = _validate_openvino_device(device)
 
     cache_dir = _ensure_openvino_cache(model_name)
 
@@ -747,8 +776,11 @@ def load_models():
         print(f"Loading TTS model ({TTS_ENGINE}: {TTS_VOICE})...")
         with debug_timer(DEBUG_MODELS, "load TTS model"):
             # Temporarily switch to GPU provider for TTS loading if configured.
-            if TTS_OPENVINO_DEVICE != "CPU" and _onnx_provider is not None:
-                _patch_onnx_providers(device_type=TTS_OPENVINO_DEVICE)
+            tts_device = TTS_OPENVINO_DEVICE
+            if tts_device != "CPU" and _onnx_provider is not None:
+                tts_device = _validate_openvino_device(tts_device)
+                if tts_device != "CPU":
+                    _patch_onnx_providers(device_type=tts_device)
 
             if TTS_ENGINE == "piper":
                 from piper import PiperVoice
@@ -772,7 +804,7 @@ def load_models():
                     urllib.request.urlretrieve(f"{base}/{TTS_VOICE}.onnx.json", voice_config)
 
                 tts_voice = PiperVoice.load(voice_path)
-                if TTS_OPENVINO_DEVICE != "CPU" and _onnx_provider is not None:
+                if tts_device != "CPU" and _onnx_provider is not None:
                     # Warmup: first GPU inference compiles the graph (~16s)
                     print("Warming up GPU TTS (first inference)...")
                     for _ in tts_voice.synthesize("warmup"):
@@ -795,7 +827,7 @@ def load_models():
                 raise ValueError(f"Unsupported TTS engine: {TTS_ENGINE}")
 
             # Restore original ONNX session class so future sessions aren't patched
-            if TTS_OPENVINO_DEVICE != "CPU" and _OrigOnnxSession is not None:
+            if tts_device != "CPU" and _OrigOnnxSession is not None:
                 import onnxruntime as ort
                 ort.InferenceSession = _OrigOnnxSession
 
