@@ -29,7 +29,7 @@ warnings.filterwarnings("ignore", message=".*CUDAExecutionProvider.*")
 import numpy as np
 
 # ---------------------------------------------------------------------------
-# Platform detection & ONNX Runtime provider injection
+# Platform detection & capability flags
 # ---------------------------------------------------------------------------
 
 def _detect_onnx_provider():
@@ -49,13 +49,312 @@ def _detect_onnx_provider():
 _onnx_provider = _detect_onnx_provider()
 _OrigOnnxSession = None  # Set by _patch_onnx_providers to bypass monkey-patch
 
+# Capability flags — computed once at import, used to guard optional code paths.
+# These check for installed packages, not hardware. Hardware probing is deferred
+# to functions like _detect_gpu_devices() which are only called when needed.
+_HAS_OPENVINO = _onnx_provider == "OpenVINOExecutionProvider"
+_HAS_CUDA = False
+try:
+    import torch as _torch
+    _HAS_CUDA = _torch.cuda.is_available()
+except ImportError:
+    pass
+
+
 def _openvino_gpu_available():
     """Check if OpenVINO GPU device is available."""
+    if not _HAS_OPENVINO:
+        return False
     try:
         from openvino import Core
         return "GPU" in Core().available_devices
     except Exception:
         return False
+
+
+def _detect_gpu_devices():
+    """Detect available GPU devices for STT acceleration.
+
+    Returns a list of (backend, device) tuples, e.g.
+    [("openvino", "GPU.0"), ("openvino", "GPU.1"), ("cuda", "cuda:0")].
+    CPU devices are not included (always assumed available).
+    """
+    devices = []
+
+    # OpenVINO GPUs
+    if _HAS_OPENVINO:
+        try:
+            import onnxruntime as ort
+            import openwakeword
+            probe_path = os.path.join(
+                os.path.dirname(openwakeword.__file__),
+                "resources", "models", "melspectrogram.onnx",
+            )
+            for i in range(8):
+                dev = f"GPU.{i}"
+                try:
+                    fd = os.dup(2)
+                    os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+                    try:
+                        sess = ort.InferenceSession(probe_path, providers=[
+                            ("OpenVINOExecutionProvider", {"device_type": dev}),
+                            "CPUExecutionProvider",
+                        ])
+                        active = sess.get_providers()
+                    finally:
+                        os.dup2(fd, 2)
+                        os.close(fd)
+                    if "OpenVINOExecutionProvider" not in active:
+                        break
+                    devices.append(("openvino", dev))
+                except Exception:
+                    break
+        except ImportError:
+            pass
+
+    # CUDA GPUs (future)
+    if _HAS_CUDA:
+        import torch
+        for i in range(torch.cuda.device_count()):
+            devices.append(("cuda", f"cuda:{i}"))
+
+    return devices
+
+
+def _generate_bench_audio(duration_s=2.0, sr=16000):
+    """Generate a short sine wave WAV file for benchmarking. Returns path."""
+    audio = (0.3 * np.sin(2 * np.pi * 200 *
+             np.linspace(0, duration_s, int(sr * duration_s),
+                         dtype=np.float32)) * 32767).astype(np.int16)
+    path = os.path.join(tempfile.gettempdir(), "stt_bench.wav")
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(audio.tobytes())
+    return path
+
+
+def _ensure_openvino_cache(model_name):
+    """Export Whisper to OpenVINO IR if not already cached. Returns cache dir."""
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    cache_dir = os.path.join(_script_dir, ".cache", f"whisper-{model_name}-openvino")
+    if os.path.exists(os.path.join(cache_dir, "openvino_encoder_model.xml")):
+        return cache_dir
+
+    from optimum.intel import OVModelForSpeechSeq2Seq
+    from transformers import AutoProcessor
+
+    hf_model = f"openai/whisper-{model_name}"
+    print(f"  Exporting whisper-{model_name} to OpenVINO (one-time, ~45s)...")
+    fd = os.dup(2)
+    os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+    try:
+        model = OVModelForSpeechSeq2Seq.from_pretrained(
+            hf_model, export=True, device="CPU", compile=False)
+    finally:
+        os.dup2(fd, 2)
+        os.close(fd)
+    os.makedirs(cache_dir, exist_ok=True)
+    model.save_pretrained(cache_dir)
+    AutoProcessor.from_pretrained(hf_model).save_pretrained(cache_dir)
+    del model
+    print("  Export complete.")
+    return cache_dir
+
+
+def _bench_openvino_device(cache_dir, device, audio_path):
+    """Benchmark a single OpenVINO device. Returns mean seconds or None on failure."""
+    from optimum.intel import OVModelForSpeechSeq2Seq
+    from transformers import AutoProcessor, pipeline
+    try:
+        fd = os.dup(2)
+        os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+        try:
+            model = OVModelForSpeechSeq2Seq.from_pretrained(
+                cache_dir, device=device, compile=True)
+            processor = AutoProcessor.from_pretrained(cache_dir)
+        finally:
+            os.dup2(fd, 2)
+            os.close(fd)
+        pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+        )
+        pipe(audio_path)  # warmup
+        t0 = time.perf_counter()
+        pipe(audio_path)
+        pipe(audio_path)
+        elapsed = (time.perf_counter() - t0) / 2
+        del model, pipe
+        return elapsed
+    except Exception as e:
+        print(f"  openvino {device}: failed ({e})")
+        return None
+
+
+def _bench_faster_whisper(model_name, audio_path):
+    """Benchmark faster-whisper on CPU. Returns mean seconds or None on failure."""
+    try:
+        from faster_whisper import WhisperModel
+        model = WhisperModel(model_name, device="cpu", compute_type="int8")
+        # warmup
+        list(model.transcribe(audio_path, beam_size=1)[0])
+        t0 = time.perf_counter()
+        list(model.transcribe(audio_path, beam_size=1)[0])
+        list(model.transcribe(audio_path, beam_size=1)[0])
+        elapsed = (time.perf_counter() - t0) / 2
+        del model
+        return elapsed
+    except Exception as e:
+        print(f"  faster-whisper: failed ({e})")
+        return None
+
+
+def _resolve_stt_auto(model_name):
+    """Resolve the best STT backend and device, with caching.
+
+    Benchmarks faster-whisper CPU against all available accelerated backends.
+    Caches the result in .cache/stt_auto.json. Re-benchmarks if hardware or model changes.
+
+    Returns (backend, device) tuple, e.g. ("openvino", "GPU.1") or ("faster-whisper", None).
+    """
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    cache_file = os.path.join(_script_dir, ".cache", "stt_auto.json")
+
+    gpu_devices = _detect_gpu_devices()
+    current_hw = sorted(f"{b}:{d}" for b, d in gpu_devices)
+
+    # Check cache
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file) as f:
+                cached = json.load(f)
+            if (cached.get("hardware") == current_hw
+                    and cached.get("model") == model_name
+                    and cached.get("has_openvino") == _HAS_OPENVINO):
+                backend = cached["backend"]
+                device = cached.get("device")
+                print(f"STT auto (cached): {backend}"
+                      + (f" on {device}" if device else ""))
+                return backend, device
+        except Exception:
+            pass
+
+    # Benchmark
+    print("STT auto-detect: benchmarking backends...")
+    audio_path = _generate_bench_audio()
+    results = {}
+
+    # faster-whisper CPU (always available)
+    print("  faster-whisper CPU...", end=" ", flush=True)
+    fw_time = _bench_faster_whisper(model_name, audio_path)
+    if fw_time is not None:
+        results[("faster-whisper", None)] = fw_time
+        print(f"{fw_time*1000:.0f} ms")
+
+    # OpenVINO: CPU + any GPU devices
+    if _HAS_OPENVINO:
+        try:
+            cache_dir = _ensure_openvino_cache(model_name)
+            ov_gpu_devs = [d for b, d in gpu_devices if b == "openvino"]
+            for dev in ["CPU"] + ov_gpu_devs:
+                print(f"  openvino {dev}...", end=" ", flush=True)
+                ov_time = _bench_openvino_device(cache_dir, dev, audio_path)
+                if ov_time is not None:
+                    results[("openvino", dev)] = ov_time
+                    print(f"{ov_time*1000:.0f} ms")
+        except Exception as e:
+            print(f"  openvino setup failed: {e}")
+
+    # CUDA (future): would add _bench_cuda_whisper here
+
+    os.unlink(audio_path)
+
+    if not results:
+        print("STT auto-detect: no backends available, defaulting to faster-whisper")
+        return "faster-whisper", None
+
+    # Pick winner
+    (best_backend, best_device), best_time = min(results.items(), key=lambda x: x[1])
+
+    # Cache result
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+    with open(cache_file, "w") as f:
+        json.dump({
+            "backend": best_backend,
+            "device": best_device,
+            "hardware": current_hw,
+            "has_openvino": _HAS_OPENVINO,
+            "model": model_name,
+            "time_ms": round(best_time * 1000),
+        }, f, indent=2)
+    label = best_backend + (f" on {best_device}" if best_device else "")
+    print(f"STT auto-detect selected: {label} ({best_time*1000:.0f} ms)")
+    return best_backend, best_device
+
+
+def _resolve_stt_openvino_device(model_name):
+    """Resolve the best OpenVINO device for STT, with caching.
+
+    Benchmarks all available OpenVINO devices, caches the winner in
+    .cache/stt_auto_device.json. Re-benchmarks if the device list changes.
+
+    Returns the device string (e.g. "GPU.1", "CPU").
+    """
+    _script_dir = os.path.dirname(os.path.abspath(__file__))
+    cache_file = os.path.join(_script_dir, ".cache", "stt_auto_device.json")
+
+    ov_gpu_devs = [d for b, d in _detect_gpu_devices() if b == "openvino"]
+    current_hw = sorted(ov_gpu_devs)
+
+    # Check cache
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file) as f:
+                cached = json.load(f)
+            if (cached.get("gpu_devices") == current_hw
+                    and cached.get("model") == model_name):
+                device = cached["device"]
+                print(f"STT auto-device (cached): {device}")
+                return device
+        except Exception:
+            pass
+
+    # Benchmark all candidates
+    candidates = ["CPU"] + ov_gpu_devs
+    print(f"STT auto-detect: benchmarking {', '.join(candidates)}...")
+
+    audio_path = _generate_bench_audio()
+    cache_dir = _ensure_openvino_cache(model_name)
+
+    best_device = "CPU"
+    best_time = float("inf")
+
+    for dev in candidates:
+        ov_time = _bench_openvino_device(cache_dir, dev, audio_path)
+        if ov_time is not None:
+            print(f"  {dev}: {ov_time*1000:.0f} ms")
+            if ov_time < best_time:
+                best_time = ov_time
+                best_device = dev
+
+    os.unlink(audio_path)
+
+    # Cache result
+    os.makedirs(os.path.dirname(cache_file), exist_ok=True)
+    with open(cache_file, "w") as f:
+        json.dump({
+            "device": best_device,
+            "gpu_devices": current_hw,
+            "model": model_name,
+            "time_ms": round(best_time * 1000),
+        }, f, indent=2)
+    print(f"STT auto-device selected: {best_device} ({best_time*1000:.0f} ms)")
+    return best_device
+
 
 def _patch_onnx_providers(device_type="CPU"):
     """Monkey-patch onnxruntime.InferenceSession to inject OpenVINO provider.
@@ -178,6 +477,8 @@ MAX_RECORD_SECONDS = _cfg.getint("vad", "max_record_seconds")
 WAKE_WORD_NAME = _cfg.get("wake_word", "name")
 WAKE_WORD_THRESHOLD = _cfg.getfloat("wake_word", "threshold")
 STT_MODEL = _cfg.get("stt", "model")
+STT_BACKEND = _cfg.get("stt", "backend", fallback="faster-whisper").lower()
+STT_OPENVINO_DEVICE = _cfg.get("stt", "openvino_device", fallback="AUTO").upper()
 CLAUDE_TIMEOUT = _cfg.getint("claude", "timeout")
 TTS_ENGINE = _cfg.get("tts", "engine")
 TTS_VOICE = _cfg.get("tts", "voice")
@@ -333,6 +634,63 @@ def reset_wake_model(wake_model):
     pp.feature_buffer = pp._get_embeddings(np.zeros(16000 * 10).astype(np.int16))
 
 
+def _load_openvino_whisper(model_name, device=None):
+    """Load Whisper via OpenVINO, exporting and caching the IR model on first run.
+
+    Returns an object with a `transcribe(audio_path)` method that returns text.
+    """
+    from optimum.intel import OVModelForSpeechSeq2Seq
+    from transformers import AutoProcessor, pipeline
+
+    # Resolve device
+    if device is None or device == "AUTO":
+        device = _resolve_stt_openvino_device(model_name)
+
+    cache_dir = _ensure_openvino_cache(model_name)
+
+    # Load from cache
+    print(f"  Loading from cache ({device})...")
+    fd = os.dup(2)
+    os.dup2(os.open(os.devnull, os.O_WRONLY), 2)
+    try:
+        model = OVModelForSpeechSeq2Seq.from_pretrained(
+            cache_dir, device=device, compile=True)
+        processor = AutoProcessor.from_pretrained(cache_dir)
+    finally:
+        os.dup2(fd, 2)
+        os.close(fd)
+
+    # Suppress misleading "Device set to use cpu" warning from transformers.
+    # The pipeline reports PyTorch device=cpu, but OpenVINO models use their
+    # own device assignment and ignore PyTorch's — the model runs on `device`.
+    import logging as _logging
+    _tf_logger = _logging.getLogger("transformers.pipelines.base")
+    _prev_level = _tf_logger.level
+    _tf_logger.setLevel(_logging.ERROR)
+    try:
+        pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+        )
+    finally:
+        _tf_logger.setLevel(_prev_level)
+
+    class _OVWhisperModel:
+        """Wrapper providing unified transcribe(audio_path) -> str interface."""
+        backend = "openvino"
+
+        def __init__(self, pipe, device):
+            self._pipe = pipe
+            self.device = device
+
+        def transcribe(self, audio_path):
+            return self._pipe(audio_path)["text"].strip()
+
+    return _OVWhisperModel(pipe, device)
+
+
 def load_models():
     """Load wake word and whisper models."""
     with debug_timer(DEBUG_MODELS, "load_models total"):
@@ -348,10 +706,38 @@ def load_models():
                              "resources", "models", f"hey_{WAKE_WORD_NAME}_v0.1.onnx")
             ])
 
-        print(f"Loading whisper model ({STT_MODEL})...")
+        # Resolve backend (auto picks the fastest via benchmark)
+        stt_backend = STT_BACKEND
+        stt_ov_device = STT_OPENVINO_DEVICE
+        if stt_backend == "auto":
+            stt_backend, stt_ov_device = _resolve_stt_auto(STT_MODEL)
+            if stt_ov_device is None:
+                stt_ov_device = "CPU"
+
+        print(f"Loading whisper model ({STT_MODEL}, {stt_backend}"
+              + (f" on {stt_ov_device}" if stt_backend == "openvino" else "") + ")...")
         with debug_timer(DEBUG_MODELS, "load whisper model"):
-            from faster_whisper import WhisperModel
-            whisper_model = WhisperModel(STT_MODEL, device="cpu", compute_type="int8")
+            if stt_backend == "openvino":
+                whisper_model = _load_openvino_whisper(STT_MODEL, stt_ov_device)
+            else:
+                from faster_whisper import WhisperModel as _FWModel
+                _fw = _FWModel(STT_MODEL, device="cpu", compute_type="int8")
+
+                class _FasterWhisperModel:
+                    """Wrapper providing unified transcribe(audio_path) -> str interface."""
+                    backend = "faster-whisper"
+                    device = "cpu"
+
+                    def __init__(self, model):
+                        self._model = model
+
+                    def transcribe(self, audio_path):
+                        segments, _ = self._model.transcribe(
+                            audio_path, beam_size=1, without_timestamps=True,
+                            vad_filter=True)
+                        return " ".join(seg.text.strip() for seg in segments).strip()
+
+                whisper_model = _FasterWhisperModel(_fw)
 
         print("Loading Silero VAD model...")
         with debug_timer(DEBUG_MODELS, "load Silero VAD model"):
@@ -478,7 +864,7 @@ def record_until_silence(stream, vad_model, pre_roll=None):
 
 
 def transcribe(whisper_model, audio_bytes):
-    """Transcribe raw audio bytes with faster-whisper."""
+    """Transcribe raw audio bytes with whisper (faster-whisper or OpenVINO)."""
     debug_log(DEBUG_TRANSCRIPTION, "transcribe — started")
     t_start = time.perf_counter()
 
@@ -494,15 +880,11 @@ def transcribe(whisper_model, audio_bytes):
     debug_log(DEBUG_TRANSCRIPTION, f"  WAV write: {t_wav - t_start:.3f}s ({len(audio_bytes)} bytes)")
 
     try:
-        segments, info = whisper_model.transcribe(
-            tmp_path, beam_size=1, without_timestamps=True, vad_filter=True
-        )
-        t_transcribe_start = time.perf_counter()
-        debug_log(DEBUG_TRANSCRIPTION, f"  whisper.transcribe() call: {t_transcribe_start - t_wav:.3f}s")
-        text = " ".join(seg.text.strip() for seg in segments).strip()
-        t_segments = time.perf_counter()
-        debug_log(DEBUG_TRANSCRIPTION, f"  segment iteration: {t_segments - t_transcribe_start:.3f}s")
-        debug_log(DEBUG_TRANSCRIPTION, f"transcribe — finished in {t_segments - t_start:.3f}s, result: '{text[:80]}'")
+        text = whisper_model.transcribe(tmp_path)
+        t_done = time.perf_counter()
+        backend = getattr(whisper_model, 'backend', 'unknown')
+        debug_log(DEBUG_TRANSCRIPTION, f"  {backend} transcribe: {t_done - t_wav:.3f}s")
+        debug_log(DEBUG_TRANSCRIPTION, f"transcribe — finished in {t_done - t_start:.3f}s, result: '{text[:80]}'")
         return text
     finally:
         os.unlink(tmp_path)
@@ -849,7 +1231,12 @@ def speak(tts_voice, text, interrupt_event=None, keep_wake_word=False):
     debug_log(DEBUG_TTS, f"speak — started ({len(text)} chars): '{text[:60]}'")
     t_speak_start = time.perf_counter()
     text = clean_text_for_speech(text, keep_wake_word=keep_wake_word)
-    player = PulsePlayer(rate=tts_voice.config.sample_rate)
+    try:
+        player = PulsePlayer(rate=tts_voice.config.sample_rate)
+    except RuntimeError as e:
+        print(f"ERROR: No audio output device available ({e})")
+        print("Exiting — check PulseAudio/PipeWire configuration.")
+        os._exit(0)
     interrupted = False
     # Write audio in small sub-chunks so we can check for interrupts frequently.
     # 2048 samples at 22050 Hz ≈ 93ms — responsive enough for wake word interrupts.
@@ -889,7 +1276,12 @@ def _always_on_listener(wake_model):
     its own wake model after TTS playback).
     """
     global _listener_suppress, _listener_needs_reset
-    listener = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
+    try:
+        listener = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
+    except RuntimeError as e:
+        print(f"ERROR: Listener failed to open audio input ({e})")
+        print("Exiting — check PulseAudio/PipeWire configuration.")
+        os._exit(0)
     try:
         while True:
             data = listener.read(CHUNK, exception_on_overflow=False)
@@ -1093,7 +1485,12 @@ def main():
             conversation_logger=conversation_logger,
         )
 
-    stream = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
+    try:
+        stream = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
+    except RuntimeError as e:
+        print(f"ERROR: No audio input device available ({e})")
+        print("Exiting — check PulseAudio/PipeWire configuration.")
+        os._exit(0)
 
     def shutdown(sig, frame):
         print("\nShutting down...")

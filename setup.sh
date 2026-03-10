@@ -1,11 +1,30 @@
 #!/bin/bash
 # Jarvis setup script — installs system deps, creates venv, installs Python packages.
 # Designed to be idempotent and fast: skips anything already installed.
+#
+# GPU acceleration packages are installed automatically based on detected hardware:
+#   Intel GPU  → optimum-intel[openvino], transformers (OpenVINO STT/TTS acceleration)
+#   NVIDIA GPU → (future: CUDA support)
+#   CPU-only   → OpenVINO CPU backend if x86_64/arm64 (still faster than raw CPU for STT)
+#
+# Override with: --force-openvino, --force-cuda, --cpu-only
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
+
+FORCE_OPENVINO=0
+FORCE_CUDA=0
+CPU_ONLY=0
+
+for arg in "$@"; do
+    case "$arg" in
+        --force-openvino) FORCE_OPENVINO=1 ;;
+        --force-cuda)     FORCE_CUDA=1 ;;
+        --cpu-only)       CPU_ONLY=1 ;;
+    esac
+done
 
 # --- System dependencies ---
 SYSTEM_PKGS=(libpulse0 alsa-utils ffmpeg)
@@ -30,7 +49,7 @@ fi
 
 source venv/bin/activate
 
-# --- Python packages ---
+# --- Core Python packages ---
 PY_PACKAGES=(openwakeword faster_whisper numpy piper telegram)
 PIP_NAMES=(openwakeword faster-whisper numpy piper-tts python-telegram-bot)
 missing_pip=()
@@ -44,6 +63,55 @@ if [ ${#missing_pip[@]} -gt 0 ]; then
     echo "Installing Python packages: ${missing_pip[*]}"
     pip install --upgrade pip
     pip install "${missing_pip[@]}"
+fi
+
+# --- GPU detection & acceleration packages ---
+if [ "$CPU_ONLY" -eq 0 ]; then
+    # Detect hardware
+    HAS_INTEL_GPU=0
+    HAS_NVIDIA_GPU=0
+
+    if command -v lspci &>/dev/null; then
+        if lspci 2>/dev/null | grep -iqE 'intel.*(vga|3d|display)'; then
+            HAS_INTEL_GPU=1
+        fi
+        if lspci 2>/dev/null | grep -iqE 'nvidia.*(vga|3d|display)'; then
+            HAS_NVIDIA_GPU=1
+        fi
+    fi
+
+    # OpenVINO: install if Intel GPU detected, or if on x86_64/arm64 (CPU acceleration),
+    # or if forced via --force-openvino
+    INSTALL_OPENVINO=0
+    ARCH=$(uname -m)
+    if [ "$FORCE_OPENVINO" -eq 1 ]; then
+        INSTALL_OPENVINO=1
+        echo "GPU: OpenVINO forced via --force-openvino"
+    elif [ "$HAS_INTEL_GPU" -eq 1 ]; then
+        INSTALL_OPENVINO=1
+        echo "GPU: Intel GPU detected — installing OpenVINO for GPU+CPU acceleration"
+    elif [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "aarch64" ]; then
+        INSTALL_OPENVINO=1
+        echo "GPU: No Intel GPU, but $ARCH CPU supports OpenVINO CPU acceleration"
+    fi
+
+    if [ "$INSTALL_OPENVINO" -eq 1 ]; then
+        ov_missing=()
+        python -c "from optimum.intel import OVModelForSpeechSeq2Seq" &>/dev/null || ov_missing+=("optimum-intel[openvino]")
+        python -c "import transformers" &>/dev/null || ov_missing+=("transformers")
+        if [ ${#ov_missing[@]} -gt 0 ]; then
+            echo "Installing OpenVINO packages: ${ov_missing[*]}"
+            pip install "${ov_missing[@]}"
+        fi
+    fi
+
+    # CUDA: future support
+    if [ "$FORCE_CUDA" -eq 1 ] || [ "$HAS_NVIDIA_GPU" -eq 1 ]; then
+        echo "GPU: NVIDIA GPU detected — CUDA STT support not yet implemented"
+        # Future: pip install faster-whisper[cuda] or similar
+    fi
+else
+    echo "GPU: Skipped (--cpu-only)"
 fi
 
 echo "Setup OK — all dependencies present."

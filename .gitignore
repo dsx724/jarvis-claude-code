@@ -4,4 +4,5 @@ voices/*.onnx.json
 voices/*.bin
 __pycache__/
 logs/
+.cache/
 config/secrets.ini

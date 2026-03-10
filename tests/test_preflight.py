@@ -61,7 +61,8 @@ def check_config_import():
         "PRE_SPEECH_TIMEOUT",
         "ACKNOWLEDGEMENTS", "STILL_WORKING", "STILL_WORKING_INTERVAL",
         "STARTUP_MESSAGES", "SHUTDOWN_MESSAGES",
-        "TTS_ENGINE", "TTS_VOICE", "TTS_OPENVINO_DEVICE", "STT_MODEL",
+        "TTS_ENGINE", "TTS_VOICE", "TTS_OPENVINO_DEVICE",
+        "STT_MODEL", "STT_BACKEND", "STT_OPENVINO_DEVICE",
         "WHISPER_HALLUCINATIONS", "ECHO_MEMORY_SECONDS", "ECHO_CANNED_THRESHOLD",
         "QUEUE_FILE",
     ]
@@ -106,6 +107,21 @@ def check_config_values():
     # TTS_OPENVINO_DEVICE validation
     if mod.TTS_OPENVINO_DEVICE not in ("CPU", "GPU"):
         errors.append(f"TTS_OPENVINO_DEVICE={mod.TTS_OPENVINO_DEVICE} not in (CPU, GPU)")
+
+    # STT_BACKEND validation
+    supported_stt_backends = ("faster-whisper", "openvino", "auto")
+    if mod.STT_BACKEND not in supported_stt_backends:
+        errors.append(f"STT_BACKEND={mod.STT_BACKEND} not in {supported_stt_backends}")
+
+    # STT_OPENVINO_DEVICE validation (when relevant)
+    if mod.STT_BACKEND in ("openvino", "auto"):
+        import re as _re
+        if not _re.match(r'^(CPU|AUTO|GPU(\.\d+)?)$', mod.STT_OPENVINO_DEVICE):
+            errors.append(f"STT_OPENVINO_DEVICE={mod.STT_OPENVINO_DEVICE} invalid format")
+
+    # Warn if openvino backend is configured but not installed
+    if mod.STT_BACKEND == "openvino" and not mod._HAS_OPENVINO:
+        errors.append("STT_BACKEND=openvino but OpenVINO is not installed")
 
     # String checks
     for name in ["TTS_ENGINE", "TTS_VOICE", "STT_MODEL", "WAKE_WORD_NAME"]:
@@ -407,27 +423,74 @@ def check_model_loading():
 
 
 # ---------------------------------------------------------------------------
-# 11. ONNX provider detection
+# 11. Platform detection & capability flags
 # ---------------------------------------------------------------------------
-def check_onnx_provider():
+def check_platform_detection():
     mod = check_module_import._module
+    # Core detection functions
     fn = getattr(mod, "_detect_onnx_provider", None)
     if fn is None:
         raise AttributeError("_detect_onnx_provider function not found")
     result = fn()
-    # Should return a provider name string or None
-    if result is not None:
-        if not isinstance(result, str):
-            raise ValueError(f"_detect_onnx_provider should return provider name string, got {result}")
-    # _onnx_provider should exist as module attribute
+    if result is not None and not isinstance(result, str):
+        raise ValueError(f"_detect_onnx_provider should return str or None, got {type(result)}")
+
+    # Capability flags must exist and be booleans
+    for flag in ("_HAS_OPENVINO", "_HAS_CUDA"):
+        if not hasattr(mod, flag):
+            raise AttributeError(f"Missing capability flag: {flag}")
+        if not isinstance(getattr(mod, flag), bool):
+            raise TypeError(f"{flag} should be bool")
+
+    # _onnx_provider should exist
     if not hasattr(mod, "_onnx_provider"):
         raise AttributeError("_onnx_provider module attribute not found")
-    # _openvino_gpu_available should exist and return a bool
+
+    # _openvino_gpu_available should return bool
     fn_gpu = getattr(mod, "_openvino_gpu_available", None)
     if fn_gpu is None:
         raise AttributeError("_openvino_gpu_available function not found")
     if not isinstance(fn_gpu(), bool):
         raise ValueError("_openvino_gpu_available should return bool")
+
+    # _detect_gpu_devices should return list of (backend, device) tuples
+    fn_detect = getattr(mod, "_detect_gpu_devices", None)
+    if fn_detect is None:
+        raise AttributeError("_detect_gpu_devices function not found")
+    devices = fn_detect()
+    if not isinstance(devices, list):
+        raise TypeError(f"_detect_gpu_devices should return list, got {type(devices)}")
+    for item in devices:
+        if not isinstance(item, tuple) or len(item) != 2:
+            raise ValueError(f"_detect_gpu_devices items should be (backend, device) tuples, got {item}")
+
+
+# ---------------------------------------------------------------------------
+# 11b. STT backend functions
+# ---------------------------------------------------------------------------
+def check_stt_functions():
+    mod = check_module_import._module
+    # Backend-agnostic functions should always exist
+    for fn_name in ("_resolve_stt_auto", "_bench_faster_whisper",
+                    "_generate_bench_audio"):
+        if not hasattr(mod, fn_name):
+            raise AttributeError(f"Missing STT function: {fn_name}")
+
+    # _generate_bench_audio should create a WAV file
+    import os as _os
+    path = mod._generate_bench_audio()
+    if not _os.path.exists(path):
+        raise FileNotFoundError(f"_generate_bench_audio did not create file: {path}")
+    _os.unlink(path)
+
+    # OpenVINO-specific functions only checked when available
+    if mod._HAS_OPENVINO:
+        for fn_name in ("_resolve_stt_openvino_device", "_ensure_openvino_cache",
+                        "_bench_openvino_device", "_load_openvino_whisper"):
+            if not hasattr(mod, fn_name):
+                raise AttributeError(f"Missing OpenVINO STT function: {fn_name}")
+    else:
+        print("         (OpenVINO not installed — skipping OpenVINO STT checks)")
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +505,8 @@ if __name__ == "__main__":
     check("Kokoro TTS wrapper", check_kokoro_wrapper)
     check("Function signatures", check_function_signatures)
     check("Listener state attributes", check_listener_state)
-    check("ONNX provider detection", check_onnx_provider)
+    check("Platform detection", check_platform_detection)
+    check("STT backend functions", check_stt_functions)
     check("Text cleaning for TTS", check_text_cleaning)
     check("Echo detection", check_echo_detection)
     check("Rate limit parsing", check_rate_limit_parsing)
