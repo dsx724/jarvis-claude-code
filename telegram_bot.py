@@ -261,7 +261,8 @@ def start_telegram_bot(token, allowed_user_ids, voice_replies, whisper_model,
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-        for attempt in range(3):
+        attempt = 0
+        while True:
             initialized = False
             polling = False
             started = False
@@ -272,10 +273,13 @@ def start_telegram_bot(token, allowed_user_ids, voice_replies, whisper_model,
                 polling = True
                 loop.run_until_complete(app.start())
                 started = True
+                if attempt > 0:
+                    log.info("Telegram bot connected after %d retries", attempt)
                 loop.run_forever()
                 break  # clean exit from run_forever
-            except Exception:
-                log.exception("Telegram bot error (attempt %d/3)", attempt + 1)
+            except Exception as e:
+                attempt += 1
+                log.warning("Telegram bot error (attempt %d): %s", attempt, e)
                 # Clean up whatever started
                 try:
                     if polling:
@@ -286,17 +290,13 @@ def start_telegram_bot(token, allowed_user_ids, voice_replies, whisper_model,
                         loop.run_until_complete(app.shutdown())
                 except Exception:
                     log.debug("Telegram cleanup error (ignored)", exc_info=True)
-                if attempt < 2:
-                    delay = 10 * (attempt + 1)
-                    log.warning("Retrying Telegram bot in %ds...", delay)
-                    loop.run_until_complete(asyncio.sleep(delay))
-                    # Rebuild the app for a fresh start
-                    app = _build_app(token, allowed_user_ids, voice_replies,
-                                     whisper_model, tts_voice, send_to_claude_fn,
-                                     conversation_logger, tts_lock=tts_lock)
-                else:
-                    log.error("Telegram bot failed after 3 attempts, giving up")
-                    break
+                delay = min(10 * attempt, 300)
+                log.warning("Retrying Telegram bot in %ds...", delay)
+                loop.run_until_complete(asyncio.sleep(delay))
+                # Rebuild the app for a fresh start
+                app = _build_app(token, allowed_user_ids, voice_replies,
+                                 whisper_model, tts_voice, send_to_claude_fn,
+                                 conversation_logger, tts_lock=tts_lock)
 
         loop.close()
 

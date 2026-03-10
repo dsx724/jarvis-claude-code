@@ -1058,6 +1058,7 @@ ECHO_CANNED_THRESHOLD = 0.85
 ECHO_REPEAT_THRESHOLD = 2
 _last_echo_text = None
 _echo_repeat_count = 0
+_muted = False
 
 # Built-in command responses (not from config, but need echo filtering)
 BUILTIN_RESPONSES = [
@@ -1075,6 +1076,10 @@ BUILTIN_RESPONSES = [
     "Can't fast-forward. The branch has diverged from the remote.",
     "The queue is empty.",
     "Queue cleared.",
+    "Muted. Say hey jarvis unmute when you need me.",
+    "Unmuted. I'm listening again.",
+    "I'm muted right now. Say hey jarvis unmute to resume.",
+    "Here are my built-in commands: shutdown, restart, revert, upgrade, mute, unmute, queue, clear queue, and builtins.",
     "All queued prompts have been processed.",
     "Stopped.",
     "Queued. I'll handle that after this task.",
@@ -1171,6 +1176,8 @@ def load_queue():
     try:
         with open(QUEUE_FILE, "r") as f:
             data = json.load(f)
+        if isinstance(data, dict):
+            return data.get("prompts", [])
         if isinstance(data, list):
             return data
     except (FileNotFoundError, json.JSONDecodeError, OSError):
@@ -1178,16 +1185,64 @@ def load_queue():
     return []
 
 
-def save_queue(queue):
-    """Atomically write the queue to disk."""
+def _load_queue_data():
+    """Load the full queue file (prompts + metadata). Returns dict."""
+    try:
+        with open(QUEUE_FILE, "r") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+        # Migrate legacy list format
+        if isinstance(data, list):
+            return {"prompts": data}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
+    return {"prompts": []}
+
+
+def _save_queue_data(data):
+    """Atomically write the full queue data to disk."""
     try:
         os.makedirs(os.path.dirname(QUEUE_FILE), exist_ok=True)
         tmp = QUEUE_FILE + ".tmp"
         with open(tmp, "w") as f:
-            json.dump(queue, f)
+            json.dump(data, f)
         os.replace(tmp, QUEUE_FILE)
     except OSError as e:
         print(f"WARNING: Could not save queue: {e}")
+
+
+def save_queue(queue):
+    """Atomically write the queue to disk, preserving metadata."""
+    data = _load_queue_data()
+    data["prompts"] = queue
+    _save_queue_data(data)
+
+
+def get_queue_reset_time():
+    """Return the persisted reset time as a tz-aware datetime, or None."""
+    data = _load_queue_data()
+    iso = data.get("reset_at")
+    if not iso:
+        return None
+    try:
+        return datetime.fromisoformat(iso)
+    except (ValueError, TypeError):
+        return None
+
+
+def set_queue_reset_time(reset_time):
+    """Persist the rate limit reset time to the queue file."""
+    data = _load_queue_data()
+    data["reset_at"] = reset_time.isoformat() if reset_time else None
+    _save_queue_data(data)
+
+
+def clear_queue_reset_time():
+    """Remove the persisted reset time."""
+    data = _load_queue_data()
+    data.pop("reset_at", None)
+    _save_queue_data(data)
 
 
 def queue_add(prompt, position=0):
@@ -1215,15 +1270,15 @@ def queue_list():
 
 
 def queue_clear():
-    """Clear the queue file."""
-    save_queue([])
+    """Clear the queue file and reset time."""
+    _save_queue_data({"prompts": []})
 
 
 # ---------------------------------------------------------------------------
 # Rate limit detection and scheduling
 # ---------------------------------------------------------------------------
 _RATE_LIMIT_RE = re.compile(
-    r"hit your limit.*resets?\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*\(([^)]+)\)",
+    r"hit your limit.*resets?\s+(?:([A-Za-z]+)\s+(\d{1,2}),?\s+)?(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*\(([^)]+)\)",
     re.IGNORECASE,
 )
 
@@ -1241,8 +1296,10 @@ def parse_rate_limit(response):
     m = _RATE_LIMIT_RE.search(response)
     if not m:
         return None
-    time_str = m.group(1).strip().lower().replace(" ", "")
-    tz_name = m.group(2).strip()
+    month_str = m.group(1)   # e.g. "Mar" or None
+    day_str = m.group(2)     # e.g. "13" or None
+    time_str = m.group(3).strip().lower().replace(" ", "")
+    tz_name = m.group(4).strip()
     try:
         tz = zoneinfo.ZoneInfo(tz_name)
     except (KeyError, zoneinfo.ZoneInfoNotFoundError):
@@ -1252,12 +1309,82 @@ def parse_rate_limit(response):
         try:
             parsed = datetime.strptime(time_str, fmt)
             reset = now.replace(hour=parsed.hour, minute=parsed.minute, second=0, microsecond=0)
-            if reset <= now:
-                reset += timedelta(days=1)
+            # Apply the date from the message if present
+            if month_str and day_str:
+                try:
+                    month_num = datetime.strptime(month_str, "%b").month
+                except ValueError:
+                    month_num = datetime.strptime(month_str, "%B").month
+                day_num = int(day_str)
+                reset = reset.replace(month=month_num, day=day_num)
+                # If the date is in the past, it must be next year
+                if reset <= now:
+                    reset = reset.replace(year=reset.year + 1)
+            else:
+                if reset <= now:
+                    reset += timedelta(days=1)
             return reset
         except ValueError:
             continue
     return None
+
+
+def _spoken_delay(delay_min):
+    """Return a natural spoken description of a delay in minutes."""
+    if delay_min < 2:
+        return "a couple of minutes"
+    if delay_min < 5:
+        return "a few minutes"
+    if delay_min < 60:
+        return f"about {delay_min} minutes"
+    hours = delay_min // 60
+    remaining = delay_min % 60
+    if hours >= 24:
+        days = hours // 24
+        leftover_hours = hours % 24
+        h_word = "hour" if leftover_hours == 1 else "hours"
+        if days == 1:
+            if leftover_hours < 2:
+                return "about a day"
+            return f"about a day and {leftover_hours} {h_word}"
+        if leftover_hours < 2:
+            return f"about {days} days"
+        return f"about {days} days and {leftover_hours} {h_word}"
+    if remaining < 10:
+        if hours == 1:
+            return "about an hour"
+        return f"about {hours} hours"
+    if hours == 1:
+        return f"about an hour and a half" if 25 <= remaining <= 35 else f"about an hour and {remaining} minutes"
+    return f"about {hours} and a half hours" if 25 <= remaining <= 35 else f"about {hours} hours and {remaining} minutes"
+
+
+def _spoken_reset_time(reset_time):
+    """Return a natural spoken date/time like 'on March third at 2 pm'."""
+    _ORDINALS = {
+        1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth",
+        6: "sixth", 7: "seventh", 8: "eighth", 9: "ninth", 10: "tenth",
+        11: "eleventh", 12: "twelfth", 13: "thirteenth", 14: "fourteenth",
+        15: "fifteenth", 16: "sixteenth", 17: "seventeenth", 18: "eighteenth",
+        19: "nineteenth", 20: "twentieth", 21: "twenty first",
+        22: "twenty second", 23: "twenty third", 24: "twenty fourth",
+        25: "twenty fifth", 26: "twenty sixth", 27: "twenty seventh",
+        28: "twenty eighth", 29: "twenty ninth", 30: "thirtieth",
+        31: "thirty first",
+    }
+    month = reset_time.strftime("%B")
+    day_ord = _ORDINALS.get(reset_time.day, str(reset_time.day))
+    hour = reset_time.hour
+    minute = reset_time.minute
+    ampm = "a m" if hour < 12 else "p m"
+    hour_12 = hour % 12 or 12
+    if minute == 0:
+        time_part = f"{hour_12} {ampm}"
+    elif minute == 30:
+        time_part = f"{hour_12} thirty {ampm}"
+    else:
+        time_part = f"{hour_12} {minute:02d} {ampm}"
+    return f"on {month} {day_ord} at {time_part}"
 
 
 def schedule_queue_processing(reset_time):
@@ -1265,11 +1392,13 @@ def schedule_queue_processing(reset_time):
     global _queue_timer
     if _queue_timer is not None:
         _queue_timer.cancel()
+    set_queue_reset_time(reset_time)
     if reset_time is None:
         _queue_ready_event.set()
         return
     delay = (reset_time - datetime.now(reset_time.tzinfo)).total_seconds()
     if delay <= 0:
+        clear_queue_reset_time()
         _queue_ready_event.set()
         return
     _queue_timer = threading.Timer(delay, _queue_ready_event.set)
@@ -1279,10 +1408,16 @@ def schedule_queue_processing(reset_time):
 
 def _process_queue(tts_voice, speak_and_clear_fn):
     """Drain the queue, sending each prompt to Claude and speaking the response."""
+    clear_queue_reset_time()
     q = load_queue()
     if not q:
         return
-    speak_and_clear_fn(f"Processing {len(q)} queued prompt{'s' if len(q) != 1 else ''}.")
+    total = len(q)
+    if total == 1:
+        speak_and_clear_fn("The rate limit has lifted. Processing your queued request now.")
+    else:
+        speak_and_clear_fn(f"The rate limit has lifted. Processing {total} queued requests now.")
+    processed = 0
     while True:
         entry = queue_pop()
         if entry is None:
@@ -1296,14 +1431,18 @@ def _process_queue(tts_voice, speak_and_clear_fn):
             schedule_queue_processing(reset_time)
             remaining = load_queue()
             delay_min = max(1, int((reset_time - datetime.now(reset_time.tzinfo)).total_seconds() / 60))
-            speak_and_clear_fn(
-                f"Still rate-limited. I'll retry in about {delay_min} minutes. "
-                f"{len(remaining)} prompt{'s' if len(remaining) != 1 else ''} remaining in the queue."
-            )
+            delay_spoken = _spoken_delay(delay_min)
+            reset_spoken = _spoken_reset_time(reset_time)
+            msg = f"Hit the rate limit again. I'll retry in {delay_spoken}, {reset_spoken}."
+            if len(remaining) > 1:
+                msg += f" {len(remaining)} prompts still in the queue."
+            speak_and_clear_fn(msg)
             return
+        processed += 1
         conversation_logger.info("CLAUDE (queued): %s", response)
         speak_and_clear_fn(response, interruptible=True)
-    speak_and_clear_fn("All queued prompts have been processed.")
+    if total > 1:
+        speak_and_clear_fn("All queued prompts have been processed.")
 
 
 # ---------------------------------------------------------------------------
@@ -1677,8 +1816,19 @@ def main():
         print(f"\nQueued prompts ({n}):")
         for i, entry in enumerate(_startup_queue, 1):
             print(f"  {i}. {entry['prompt']}")
-        speak_and_clear(f"I have {n} queued prompt{'s' if n != 1 else ''} from before.")
-        _queue_ready_event.set()
+        saved_reset = get_queue_reset_time()
+        if saved_reset and saved_reset > datetime.now(saved_reset.tzinfo):
+            delay_min = max(1, int((saved_reset - datetime.now(saved_reset.tzinfo)).total_seconds() / 60))
+            delay_spoken = _spoken_delay(delay_min)
+            reset_spoken = _spoken_reset_time(saved_reset)
+            speak_and_clear(
+                f"I have {n} queued prompt{'s' if n != 1 else ''} from before. "
+                f"Still rate-limited, I'll retry in {delay_spoken}, {reset_spoken}."
+            )
+            schedule_queue_processing(saved_reset)
+        else:
+            speak_and_clear(f"I have {n} queued prompt{'s' if n != 1 else ''} from before.")
+            _queue_ready_event.set()
 
     skip_wake_word = False
     # Keep a rolling buffer of recent audio chunks so we can capture speech
@@ -1746,6 +1896,9 @@ def main():
         _listener_suppress = False
 
         # Transcribe
+        if not audio_bytes:
+            print("(no speech detected)")
+            continue
         with debug_timer(DEBUG_TRANSCRIPTION, "transcribe (end-to-end)"):
             text = transcribe(whisper_model, audio_bytes)
         if not text:
@@ -1764,6 +1917,44 @@ def main():
         # and would otherwise be incorrectly filtered as self-echo.
         text_lower = text.lower().strip().rstrip(".")
         wn_lower = WAKE_WORD_NAME.lower()
+
+        # Mute/unmute commands
+        global _muted
+        if text_lower in ("unmute", f"unmute {wn_lower}"):
+            print(f"Transcribed: {text}")
+            print("Built-in command: unmute")
+            _muted = False
+            speak_and_clear("Unmuted. I'm listening again.")
+            continue
+
+        if text_lower in ("mute", f"mute {wn_lower}", "mute yourself",
+                          "go quiet", "be quiet"):
+            print(f"Transcribed: {text}")
+            print("Built-in command: mute")
+            _muted = True
+            speak_and_clear("Muted. Say hey jarvis unmute when you need me.")
+            continue
+
+        if text_lower in ("builtins", "built-ins", "built ins",
+                          "list commands", "what commands do you have",
+                          "what are your commands", "list builtins",
+                          "list built-ins", "what can you do"):
+            print(f"Transcribed: {text}")
+            print("Built-in command: builtins")
+            commands = (
+                "Here are my built-in commands: "
+                "shutdown, restart, revert, upgrade, "
+                "mute, unmute, queue, clear queue, and builtins."
+            )
+            speak_and_clear(commands)
+            continue
+
+        # When muted, ignore everything except unmute (handled above)
+        if _muted:
+            print(f"Transcribed: {text}")
+            print("(muted — ignoring)")
+            continue
+
         if text_lower in ("shutdown", "shut down", f"shutdown {wn_lower}",
                           f"shut down {wn_lower}", "turn yourself off",
                           "go to sleep", "goodnight", "good night"):
@@ -1933,6 +2124,8 @@ def main():
             _listener_needs_reset = True
             _listener_suppress = False
 
+            if not bg_audio:
+                return None
             bg_text = transcribe(whisper_model, bg_audio)
             if not bg_text or is_garbage_transcription(bg_text):
                 return None
@@ -1998,10 +2191,12 @@ def main():
             q = queue_add(text)
             schedule_queue_processing(reset_time)
             delay_min = max(1, int((reset_time - datetime.now(reset_time.tzinfo)).total_seconds() / 60))
-            speak_and_clear(
-                f"You've been rate-limited. I've queued your prompt and will retry in about {delay_min} minutes. "
-                f"There {'is' if len(q) == 1 else 'are'} {len(q)} prompt{'s' if len(q) != 1 else ''} in the queue."
-            )
+            delay_spoken = _spoken_delay(delay_min)
+            reset_spoken = _spoken_reset_time(reset_time)
+            msg = f"I've hit the rate limit. Your request is queued and I'll try again in {delay_spoken}, {reset_spoken}."
+            if len(q) > 1:
+                msg += f" There are now {len(q)} prompts in the queue."
+            speak_and_clear(msg)
             continue
 
         # Speak response (interruptible by wake word)
