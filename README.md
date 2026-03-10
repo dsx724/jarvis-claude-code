@@ -58,6 +58,7 @@ These are handled locally without calling Claude:
 | shutdown / shut down / go to sleep / goodnight | Stops Jarvis (clean exit) |
 | restart / reboot | Restarts Jarvis |
 | revert | Reverts the last git commit and restarts |
+| upgrade / update / git pull | Pulls latest changes and restarts |
 | stop / cancel / never mind | Kills Claude mid-processing |
 | queue / show queue | Lists queued prompts |
 | clear queue / empty queue | Clears the prompt queue |

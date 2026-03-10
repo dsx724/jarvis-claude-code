@@ -1066,6 +1066,13 @@ BUILTIN_RESPONSES = [
     "Reverted commit. Restarting now.",
     "Sorry, I couldn't find the git repository.",
     "Sorry, the revert failed.",
+    "Updated. Restarting now.",
+    "Already up to date.",
+    "Sorry, the upgrade failed.",
+    "Sorry, I couldn't check the repository status.",
+    "Sorry, I couldn't reach the remote.",
+    "There are uncommitted changes. Please commit or stash them first.",
+    "Can't fast-forward. The branch has diverged from the remote.",
     "The queue is empty.",
     "Queue cleared.",
     "All queued prompts have been processed.",
@@ -1795,6 +1802,53 @@ def main():
                 print(f"git revert error: {revert.stderr}")
                 continue
             speak(tts_voice, f"Reverted commit {short_hash}. Restarting now.")
+            os._exit(42)
+
+        if text_lower in ("upgrade", "update", "upgrade yourself",
+                          f"upgrade {wn_lower}", f"update {wn_lower}",
+                          "pull updates", "git pull"):
+            print(f"Transcribed: {text}")
+            print("Built-in command: upgrade")
+            repo_dir = os.path.dirname(os.path.abspath(__file__))
+
+            # Check for uncommitted changes first
+            status = subprocess.run(
+                ["git", "status", "--porcelain"],
+                capture_output=True, text=True, cwd=repo_dir
+            )
+            if status.returncode != 0:
+                speak_and_clear("Sorry, I couldn't check the repository status.")
+                continue
+            if status.stdout.strip():
+                speak_and_clear("There are uncommitted changes. Please commit or stash them first.")
+                print(f"Dirty files:\n{status.stdout.strip()}")
+                continue
+
+            # Fetch first, then check if fast-forward is possible
+            fetch = subprocess.run(
+                ["git", "fetch"],
+                capture_output=True, text=True, cwd=repo_dir
+            )
+            if fetch.returncode != 0:
+                speak_and_clear("Sorry, I couldn't reach the remote.")
+                print(f"git fetch error: {fetch.stderr}")
+                continue
+
+            # Try fast-forward merge (no conflict possible)
+            result = subprocess.run(
+                ["git", "merge", "--ff-only", "FETCH_HEAD"],
+                capture_output=True, text=True, cwd=repo_dir
+            )
+            if result.returncode != 0:
+                speak_and_clear("Can't fast-forward. The branch has diverged from the remote.")
+                print(f"git merge --ff-only error: {result.stderr}")
+                continue
+
+            output = result.stdout.strip()
+            if "Already up to date" in output:
+                speak_and_clear("Already up to date.")
+                continue
+            speak(tts_voice, "Updated. Restarting now.")
             os._exit(42)
 
         if text_lower in ("queue", "show queue", "whats in the queue",
