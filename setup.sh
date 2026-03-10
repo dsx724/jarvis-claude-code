@@ -87,10 +87,10 @@ if [ "$CPU_ONLY" -eq 0 ]; then
     HAS_NVIDIA_GPU=0
 
     if command -v lspci &>/dev/null; then
-        if lspci 2>/dev/null | grep -iqE 'intel.*(vga|3d|display)'; then
+        if lspci 2>/dev/null | grep -iE '(vga|3d|display)' | grep -iq 'intel'; then
             HAS_INTEL_GPU=1
         fi
-        if lspci 2>/dev/null | grep -iqE 'nvidia.*(vga|3d|display)'; then
+        if lspci 2>/dev/null | grep -iE '(vga|3d|display)' | grep -iq 'nvidia'; then
             HAS_NVIDIA_GPU=1
         fi
     fi

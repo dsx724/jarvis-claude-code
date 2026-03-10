@@ -260,18 +260,45 @@ def start_telegram_bot(token, allowed_user_ids, voice_replies, whisper_model,
         # register signal handlers. Manage the asyncio loop manually instead.
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        try:
-            loop.run_until_complete(app.initialize())
-            loop.run_until_complete(app.updater.start_polling())
-            loop.run_until_complete(app.start())
-            loop.run_forever()
-        except Exception:
-            log.exception("Telegram bot error")
-        finally:
-            loop.run_until_complete(app.updater.stop())
-            loop.run_until_complete(app.stop())
-            loop.run_until_complete(app.shutdown())
-            loop.close()
+
+        for attempt in range(3):
+            initialized = False
+            polling = False
+            started = False
+            try:
+                loop.run_until_complete(app.initialize())
+                initialized = True
+                loop.run_until_complete(app.updater.start_polling())
+                polling = True
+                loop.run_until_complete(app.start())
+                started = True
+                loop.run_forever()
+                break  # clean exit from run_forever
+            except Exception:
+                log.exception("Telegram bot error (attempt %d/3)", attempt + 1)
+                # Clean up whatever started
+                try:
+                    if polling:
+                        loop.run_until_complete(app.updater.stop())
+                    if started:
+                        loop.run_until_complete(app.stop())
+                    if initialized:
+                        loop.run_until_complete(app.shutdown())
+                except Exception:
+                    log.debug("Telegram cleanup error (ignored)", exc_info=True)
+                if attempt < 2:
+                    delay = 10 * (attempt + 1)
+                    log.warning("Retrying Telegram bot in %ds...", delay)
+                    loop.run_until_complete(asyncio.sleep(delay))
+                    # Rebuild the app for a fresh start
+                    app = _build_app(token, allowed_user_ids, voice_replies,
+                                     whisper_model, tts_voice, send_to_claude_fn,
+                                     conversation_logger, tts_lock=tts_lock)
+                else:
+                    log.error("Telegram bot failed after 3 attempts, giving up")
+                    break
+
+        loop.close()
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
