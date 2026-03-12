@@ -6,17 +6,17 @@ Voice assistant that listens for a wake word, records speech, transcribes it, se
 
 ## Project Structure
 
-- `jarvis.py` — Main application code (loads config directly from `config/jarvis.ini`).
-- `config/jarvis.ini` — User-editable configuration file (INI format) with all tunable settings.
-- `agents/main/CLAUDE.md` — System prompt for Claude Code sessions.
-- `logs/` — Runtime logs (gitignored): `error.log`, `conversation.log`.
-- `voices/` — TTS voice models (Piper auto-downloaded on first run; Kokoro requires manual download).
-- `tests/test_preflight.py` — Pre-restart validation checks (safety gate).
-- `tests/test_emulator.py` — Emulation testing CLI (runs YAML scenarios through real Jarvis logic).
-- `tests/emulator/` — Mock classes, scenario driver, and runner for emulation tests.
-- `tests/scenarios/` — YAML scenario definitions for emulation testing.
-- `jarvis.sh` — Launcher script with auto-restart on exit code 42 and preflight gate.
-- `jarvis.service` — systemd unit file.
+- [jarvis.py](jarvis.py) -- Main application code (loads config directly from [config/jarvis.ini](config/jarvis.ini)).
+- [config/jarvis.ini](config/jarvis.ini) -- User-editable configuration file (INI format) with all tunable settings.
+- [agents/main/CLAUDE.md](agents/main/CLAUDE.md) -- System prompt for Claude Code sessions.
+- [logs/](logs/) -- Runtime logs (gitignored): `error.log`, `conversation.log`.
+- [voices/](voices/) -- TTS voice models (Piper auto-downloaded on first run; Kokoro requires manual download).
+- [tests/test_preflight.py](tests/test_preflight.py) -- Pre-restart validation checks (safety gate).
+- [tests/test_emulator.py](tests/test_emulator.py) -- Emulation testing CLI (runs YAML scenarios through real Jarvis logic).
+- [tests/emulator/](tests/emulator/) -- Mock classes, scenario driver, and runner for emulation tests.
+- [tests/scenarios/](tests/scenarios/) -- YAML scenario definitions for emulation testing.
+- [jarvis.sh](jarvis.sh) -- Launcher script with auto-restart on exit code 42 and preflight gate.
+- [jarvis.service](jarvis.service) -- systemd unit file.
 
 ## Components
 
