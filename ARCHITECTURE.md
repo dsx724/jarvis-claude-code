@@ -1,4 +1,4 @@
-[jarvis](.) / [ARCHITECTURE.md](ARCHITECTURE.md)
+[..](../index.md) / [jarvis](.) / [ARCHITECTURE.md](ARCHITECTURE.md)
 
 # Jarvis Architecture
 
