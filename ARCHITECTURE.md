@@ -1,3 +1,5 @@
+[jarvis](.) / [ARCHITECTURE.md](ARCHITECTURE.md)
+
 # Jarvis Architecture
 
 Voice assistant that listens for a wake word, records speech, transcribes it, sends it to Claude Code, and speaks the response aloud.

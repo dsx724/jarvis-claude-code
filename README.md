@@ -1,3 +1,5 @@
+[jarvis](.) / [README.md](README.md)
+
 # Jarvis
 
 Voice assistant that listens for a wake word, records speech, transcribes it, sends it to Claude Code, and speaks the response aloud. Optionally accessible via Telegram bot.
