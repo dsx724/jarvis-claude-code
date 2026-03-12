@@ -6,11 +6,3 @@ __pycache__/
 logs/
 .cache/
 config/secrets.ini
-
-# Binary files -- not tracked in git
-*.pdf
-*.xlsx
-*.zip
-*.rar
-*.doc
-*.docx
