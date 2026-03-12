@@ -1,4 +1,4 @@
-[..](../index.md) / [jarvis](.) / [README.md](README.md)
+[Home](../index.md) / [jarvis](.) / [README.md](README.md)
 
 # Jarvis
 
