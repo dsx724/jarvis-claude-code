@@ -1,25 +1,31 @@
 #!/bin/bash
-# Jarvis setup script — installs system deps, creates venv, installs Python packages.
+# Jarvis setup script -- installs system deps, creates venv, installs Python packages.
 # Designed to be idempotent and fast: skips anything already installed.
 #
 # GPU acceleration packages are installed automatically based on detected hardware:
-#   Intel GPU  → optimum-intel[openvino], transformers (OpenVINO STT/TTS acceleration)
-#   NVIDIA GPU → (future: CUDA support)
-#   CPU-only   → OpenVINO CPU backend if x86_64/arm64 (still faster than raw CPU for STT)
+#   WSL2 + /dev/dxg  -> onnxruntime-directml (Qualcomm Adreno, AMD, NVIDIA via D3D12)
+#   Intel GPU        -> optimum-intel[openvino], transformers (OpenVINO STT/TTS acceleration)
+#   NVIDIA GPU       -> (future: CUDA support)
+#   CPU-only         -> OpenVINO CPU backend if x86_64 (still faster than raw CPU for STT)
 #
-# Override with: --force-openvino, --force-cuda, --cpu-only
+# Note: onnxruntime and onnxruntime-directml conflict -- only one can be installed.
+# On WSL2 with GPU passthrough, onnxruntime-directml is preferred over onnxruntime.
+#
+# Override with: --force-directml, --force-openvino, --force-cuda, --cpu-only
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+FORCE_DIRECTML=0
 FORCE_OPENVINO=0
 FORCE_CUDA=0
 CPU_ONLY=0
 
 for arg in "$@"; do
     case "$arg" in
+        --force-directml) FORCE_DIRECTML=1 ;;
         --force-openvino) FORCE_OPENVINO=1 ;;
         --force-cuda)     FORCE_CUDA=1 ;;
         --cpu-only)       CPU_ONLY=1 ;;
@@ -82,32 +88,62 @@ fi
 
 # --- GPU detection & acceleration packages ---
 if [ "$CPU_ONLY" -eq 0 ]; then
-    # Detect hardware
+    ARCH=$(uname -m)
+
+    # Detect environment
+    IS_WSL=0
+    grep -qi microsoft /proc/version 2>/dev/null && IS_WSL=1
+
+    HAS_DXG=0
+    [ -e /dev/dxg ] && HAS_DXG=1
+
     HAS_INTEL_GPU=0
     HAS_NVIDIA_GPU=0
-
     if command -v lspci &>/dev/null; then
-        if lspci 2>/dev/null | grep -iE '(vga|3d|display)' | grep -iq 'intel'; then
-            HAS_INTEL_GPU=1
-        fi
-        if lspci 2>/dev/null | grep -iE '(vga|3d|display)' | grep -iq 'nvidia'; then
-            HAS_NVIDIA_GPU=1
+        lspci 2>/dev/null | grep -iE '(vga|3d|display)' | grep -iq 'intel'  && HAS_INTEL_GPU=1
+        lspci 2>/dev/null | grep -iE '(vga|3d|display)' | grep -iq 'nvidia' && HAS_NVIDIA_GPU=1
+    fi
+
+    # --- DirectML (WSL2 with GPU passthrough: Qualcomm Adreno, AMD, NVIDIA via D3D12) ---
+    # onnxruntime-directml and onnxruntime conflict; swap if needed.
+    INSTALL_DIRECTML=0
+    if [ "$FORCE_DIRECTML" -eq 1 ]; then
+        INSTALL_DIRECTML=1
+        echo "GPU: DirectML forced via --force-directml"
+    elif [ "$IS_WSL" -eq 1 ] && [ "$HAS_DXG" -eq 1 ]; then
+        INSTALL_DIRECTML=1
+        echo "GPU: WSL2 with GPU passthrough detected (/dev/dxg) -- installing onnxruntime-directml"
+    fi
+
+    if [ "$INSTALL_DIRECTML" -eq 1 ]; then
+        if ! python -c "import onnxruntime as ort; assert 'DmlExecutionProvider' in ort.get_available_providers()" &>/dev/null; then
+            # onnxruntime-directml conflicts with plain onnxruntime -- try swapping.
+            # Note: the pip package is Windows-only; on Linux (including WSL2) it is not
+            # published, so we fall back to plain onnxruntime which uses CPU only.
+            pip show onnxruntime &>/dev/null && pip uninstall -y onnxruntime || true
+            if pip install onnxruntime-directml 2>/dev/null; then
+                echo "GPU: onnxruntime-directml installed (DmlExecutionProvider active)"
+            else
+                echo "GPU: onnxruntime-directml not available for this platform -- falling back to plain onnxruntime (CPU only)"
+                pip show onnxruntime &>/dev/null || pip install onnxruntime
+            fi
         fi
     fi
 
-    # OpenVINO: install if Intel GPU detected, or if on x86_64/arm64 (CPU acceleration),
-    # or if forced via --force-openvino
+    # --- OpenVINO (Intel GPU or x86_64 CPU acceleration; skip on ARM/Qualcomm) ---
+    # Not installed when DirectML is already handling acceleration.
     INSTALL_OPENVINO=0
-    ARCH=$(uname -m)
-    if [ "$FORCE_OPENVINO" -eq 1 ]; then
-        INSTALL_OPENVINO=1
-        echo "GPU: OpenVINO forced via --force-openvino"
-    elif [ "$HAS_INTEL_GPU" -eq 1 ]; then
-        INSTALL_OPENVINO=1
-        echo "GPU: Intel GPU detected — installing OpenVINO for GPU+CPU acceleration"
-    elif [ "$ARCH" = "x86_64" ] || [ "$ARCH" = "aarch64" ]; then
-        INSTALL_OPENVINO=1
-        echo "GPU: No Intel GPU, but $ARCH CPU supports OpenVINO CPU acceleration"
+    if [ "$INSTALL_DIRECTML" -eq 0 ]; then
+        if [ "$FORCE_OPENVINO" -eq 1 ]; then
+            INSTALL_OPENVINO=1
+            echo "GPU: OpenVINO forced via --force-openvino"
+        elif [ "$HAS_INTEL_GPU" -eq 1 ]; then
+            INSTALL_OPENVINO=1
+            echo "GPU: Intel GPU detected -- installing OpenVINO for GPU+CPU acceleration"
+        elif [ "$ARCH" = "x86_64" ]; then
+            INSTALL_OPENVINO=1
+            echo "GPU: x86_64 CPU supports OpenVINO CPU acceleration"
+        fi
     fi
 
     if [ "$INSTALL_OPENVINO" -eq 1 ]; then
@@ -120,9 +156,9 @@ if [ "$CPU_ONLY" -eq 0 ]; then
         fi
     fi
 
-    # CUDA: future support
+    # --- CUDA (future support) ---
     if [ "$FORCE_CUDA" -eq 1 ] || [ "$HAS_NVIDIA_GPU" -eq 1 ]; then
-        echo "GPU: NVIDIA GPU detected — CUDA STT support not yet implemented"
+        echo "GPU: NVIDIA GPU detected -- CUDA STT support not yet implemented"
         # Future: pip install faster-whisper[cuda] or similar
     fi
 else

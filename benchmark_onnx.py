@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Benchmark ONNX model inference: CPU vs OpenVINO CPU vs OpenVINO GPU(s).
+"""Benchmark ONNX model inference: CPU vs DirectML vs OpenVINO CPU vs OpenVINO GPU(s).
 
-Auto-detects available OpenVINO GPU devices and benchmarks all of them.
-Use --gpu GPU.1 to benchmark only a specific GPU device.
+Auto-detects available execution providers and GPU devices.
+Use --gpu GPU.1 to benchmark only a specific OpenVINO GPU device.
 
 Tests all models used by Jarvis with realistic input sizes:
   - melspectrogram:  1280 samples (80ms chunk, as fed by wake word loop)
@@ -97,8 +97,11 @@ def main():
             print("none found")
 
     # --- Build provider configs ---
+    available_providers = ort.get_available_providers()
     providers = {"CPU": ["CPUExecutionProvider"]}
-    if "OpenVINOExecutionProvider" in ort.get_available_providers():
+    if "DmlExecutionProvider" in available_providers:
+        providers["DML"] = ["DmlExecutionProvider", "CPUExecutionProvider"]
+    if "OpenVINOExecutionProvider" in available_providers:
         providers["OV-CPU"] = [
             ("OpenVINOExecutionProvider", {"device_type": "CPU"}),
             "CPUExecutionProvider",

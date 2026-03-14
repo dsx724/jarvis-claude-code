@@ -43,11 +43,14 @@ import numpy as np
 def _detect_onnx_provider():
     """Detect the best available ONNX Runtime execution provider for this platform.
 
-    Returns provider name string (e.g. "OpenVINOExecutionProvider") or None.
+    Priority: DmlExecutionProvider (WSL2/Windows) > OpenVINOExecutionProvider (Intel) > None.
+    Returns provider name string or None.
     """
     try:
         import onnxruntime as ort
         available = ort.get_available_providers()
+        if "DmlExecutionProvider" in available:
+            return "DmlExecutionProvider"
         if "OpenVINOExecutionProvider" in available:
             return "OpenVINOExecutionProvider"
     except ImportError:
@@ -61,6 +64,7 @@ _OrigOnnxSession = None  # Set by _patch_onnx_providers to bypass monkey-patch
 # These check for installed packages, not hardware. Hardware probing is deferred
 # to functions like _detect_gpu_devices() which are only called when needed.
 _HAS_OPENVINO = _onnx_provider == "OpenVINOExecutionProvider"
+_HAS_DIRECTML = _onnx_provider == "DmlExecutionProvider"
 _HAS_CUDA = False
 try:
     import torch as _torch
@@ -146,6 +150,10 @@ def _detect_gpu_devices():
                     break
         except ImportError:
             pass
+
+    # DirectML GPU (WSL2/Windows: Qualcomm Adreno, AMD, NVIDIA via D3D12)
+    if _HAS_DIRECTML:
+        devices.append(("directml", "DML"))
 
     # CUDA GPUs (future)
     if _HAS_CUDA:
@@ -392,13 +400,14 @@ def _resolve_stt_openvino_device(model_name):
 
 
 def _patch_onnx_providers(device_type="CPU"):
-    """Monkey-patch onnxruntime.InferenceSession to inject OpenVINO provider.
+    """Monkey-patch onnxruntime.InferenceSession to inject the best available provider.
 
     Libraries like openwakeword, silero-vad, piper, and kokoro hardcode
     CPUExecutionProvider. This patch transparently upgrades them to use
-    OpenVINO when available. device_type selects CPU, GPU, or AUTO
-    acceleration. Models incompatible with the provider silently fall back
-    to CPU.
+    DirectML (WSL2/Windows) or OpenVINO (Intel) when available.
+    device_type is only used for OpenVINO (CPU, GPU, AUTO); DirectML has no
+    per-session device selection. Models incompatible with the provider
+    silently fall back to CPU.
     """
     if _onnx_provider is None:
         return
@@ -408,7 +417,11 @@ def _patch_onnx_providers(device_type="CPU"):
     _OrigSession = ort.InferenceSession
     _OrigOnnxSession = _OrigSession
 
-    ov_provider = (_onnx_provider, {"device_type": device_type})
+    # DirectML takes no options dict; OpenVINO takes a device_type dict.
+    if _HAS_DIRECTML:
+        accel_provider = "DmlExecutionProvider"
+    else:
+        accel_provider = (_onnx_provider, {"device_type": device_type})
 
     class _PatchedSession(_OrigSession):
         def __init__(self, *args, providers=None, **kwargs):
@@ -418,13 +431,13 @@ def _patch_onnx_providers(device_type="CPU"):
                 for p in providers:
                     name = p if isinstance(p, str) else p[0]
                     if name == "CPUExecutionProvider":
-                        patched.append(ov_provider)
+                        patched.append(accel_provider)
                         patched.append("CPUExecutionProvider")
                     else:
                         patched.append(p)
                 providers = patched
             else:
-                providers = [ov_provider, "CPUExecutionProvider"]
+                providers = [accel_provider, "CPUExecutionProvider"]
             try:
                 # Suppress C++ error messages from onnxruntime during probe
                 _fd = os.dup(2)
@@ -435,7 +448,7 @@ def _patch_onnx_providers(device_type="CPU"):
                     os.dup2(_fd, 2)
                     os.close(_fd)
             except Exception:
-                # Model incompatible with OpenVINO — fall back to original providers
+                # Model incompatible with provider -- fall back to original providers
                 fallback = orig_providers or ["CPUExecutionProvider"]
                 super().__init__(*args, providers=fallback, **kwargs)
 
@@ -522,11 +535,12 @@ TTS_ENGINE = _cfg.get("tts", "engine")
 TTS_VOICE = _cfg.get("tts", "voice")
 TTS_OPENVINO_DEVICE = _cfg.get("tts", "openvino_device", fallback="CPU").upper()
 
-# Apply ONNX provider patch with CPU for general models (wake word, VAD, STT).
-# GPU/AUTO patch is applied temporarily during TTS loading only, since OpenVINO
-# GPU produces subtly incorrect numerical results in openwakeword's melspectrogram
-# and embedding models, breaking wake word detection.
-if TTS_OPENVINO_DEVICE == "CPU":
+# Apply ONNX provider patch for all ONNX models (wake word, VAD, TTS).
+# For OpenVINO: GPU/AUTO patch is applied temporarily during TTS loading only,
+# since OpenVINO GPU produces subtly incorrect numerical results in openwakeword's
+# melspectrogram and embedding models, breaking wake word detection.
+# For DirectML: one provider covers all models without per-model device selection.
+if _HAS_DIRECTML or TTS_OPENVINO_DEVICE == "CPU":
     _patch_onnx_providers(device_type="CPU")
 
 COMMERCIAL_USE = _cfg.getboolean("licensing", "commercial_use", fallback=False)
@@ -781,7 +795,8 @@ def load_models():
     """Load wake word and whisper models."""
     with debug_timer(DEBUG_MODELS, "load_models total"):
         if _onnx_provider:
-            print(f"ONNX provider: {_onnx_provider} ({TTS_OPENVINO_DEVICE})")
+            suffix = f" ({TTS_OPENVINO_DEVICE})" if _HAS_OPENVINO else ""
+            print(f"ONNX provider: {_onnx_provider}{suffix}")
         else:
             print("ONNX provider: CPUExecutionProvider")
         print("Loading wake word model...")
@@ -836,8 +851,9 @@ def load_models():
         print(f"Loading TTS model ({TTS_ENGINE}: {TTS_VOICE})...")
         with debug_timer(DEBUG_MODELS, "load TTS model"):
             # Temporarily switch to GPU provider for TTS loading if configured.
+            # DirectML is already patched globally and needs no per-model device selection.
             tts_device = TTS_OPENVINO_DEVICE
-            if tts_device != "CPU" and _onnx_provider is not None:
+            if not _HAS_DIRECTML and tts_device != "CPU" and _HAS_OPENVINO:
                 tts_device = _validate_openvino_device(tts_device)
                 if tts_device != "CPU":
                     _patch_onnx_providers(device_type=tts_device)

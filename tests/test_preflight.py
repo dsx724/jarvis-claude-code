@@ -437,7 +437,7 @@ def check_platform_detection():
         raise ValueError(f"_detect_onnx_provider should return str or None, got {type(result)}")
 
     # Capability flags must exist and be booleans
-    for flag in ("_HAS_OPENVINO", "_HAS_CUDA"):
+    for flag in ("_HAS_OPENVINO", "_HAS_DIRECTML", "_HAS_CUDA"):
         if not hasattr(mod, flag):
             raise AttributeError(f"Missing capability flag: {flag}")
         if not isinstance(getattr(mod, flag), bool):
