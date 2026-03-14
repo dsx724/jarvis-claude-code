@@ -1291,7 +1291,7 @@ _queue_timer = None
 
 # Always-on background wake word listener state
 _wake_detected = threading.Event()    # bg listener sets when wake word heard
-_listener_suppress = False            # True during recording — bg skips predict()
+_listener_suppress = True             # True during idle/recording — bg skips predict(); False during Claude processing
 _listener_needs_reset = False         # True after TTS — bg resets its own model
 
 
@@ -2076,6 +2076,9 @@ def main():
     pre_roll_buf = deque(maxlen=20)
     _iter_count = 0
     while True:
+        # Suppress bg listener during idle — main loop handles wake word detection.
+        # It will be re-enabled when Claude processing starts.
+        _listener_suppress = True
         if not skip_wake_word:
             # Read audio chunk for wake word detection
             try:
@@ -2355,6 +2358,8 @@ def main():
             done_event.set()
 
         threading.Thread(target=claude_worker, daemon=True).start()
+        # Hand off wake word detection to bg listener while we wait for Claude.
+        _listener_suppress = False
 
         def _check_wake_during_claude():
             """Handle a wake word detection while Claude is processing.
