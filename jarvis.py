@@ -1874,7 +1874,7 @@ def send_to_claude(text, status_queue=None, first_call=[True], proc_holder=None)
 
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=env,
+            text=True, env=env, cwd=SCRIPT_DIR,
         )
         if proc_holder is not None:
             proc_holder["proc"] = proc
