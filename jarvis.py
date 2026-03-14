@@ -1674,6 +1674,7 @@ def _strip_wake_prefix(text):
 SESSION_ID = str(uuid.uuid4())
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+AGENT_DIR = os.path.join(SCRIPT_DIR, "agents", "jarvis")
 
 # ---------------------------------------------------------------------------
 # Session file watcher — monitors Claude's session JSONL via Linux inotify
@@ -1682,7 +1683,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def _claude_session_path():
     """Return the path to Claude's session JSONL file for the current session."""
-    cwd = os.path.abspath(SCRIPT_DIR)
+    cwd = os.path.abspath(AGENT_DIR)
     project_dir = cwd.replace("/", "-")
     return os.path.join(
         os.path.expanduser("~"), ".claude", "projects", project_dir,
@@ -1874,7 +1875,7 @@ def send_to_claude(text, status_queue=None, first_call=[True], proc_holder=None)
 
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=env, cwd=SCRIPT_DIR,
+            text=True, env=env, cwd=AGENT_DIR,
         )
         if proc_holder is not None:
             proc_holder["proc"] = proc
