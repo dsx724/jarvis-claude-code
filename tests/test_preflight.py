@@ -215,7 +215,7 @@ def check_function_signatures():
         "is_garbage_transcription": ["text"],
         "is_self_echo": ["transcribed"],
         "speak": ["tts_voice", "text"],
-        "_always_on_listener": ["wake_model"],
+        "_always_on_listener": ["wake_model", "vad_model"],
         "_strip_wake_prefix": ["text"],
         "send_to_claude": ["text"],
         "main": [],

@@ -1614,37 +1614,70 @@ def speak(tts_voice, text, interrupt_event=None, keep_wake_word=False):
     return interrupted
 
 
-def _always_on_listener(wake_model):
+def _always_on_listener(wake_model, vad_model):
     """Persistent daemon thread that monitors mic for wake word.
 
     Opens its own PulseAudio recording stream and runs forever. Sets
     _wake_detected when the wake word is heard.  Respects _listener_suppress
     (skips prediction during recording) and _listener_needs_reset (resets
     its own wake model after TTS playback).
+
+    VAD-gated: runs Silero VAD on each 32ms chunk and only feeds the more
+    expensive wake word model when speech is present.
     """
+    import torch
     global _listener_suppress, _listener_needs_reset
     try:
-        listener = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=CHUNK)
+        listener = PulseRecorder(rate=RATE, channels=CHANNELS, chunk=VAD_CHUNK)
     except RuntimeError as e:
         print(f"ERROR: Listener failed to open audio input ({e})")
         print("Exiting — check PulseAudio/PipeWire configuration.")
         os._exit(0)
+    _wake_buf = bytearray()
+    _was_speech = False
     try:
         while True:
             try:
-                data = listener.read(CHUNK, exception_on_overflow=False)
+                data = listener.read(VAD_CHUNK, exception_on_overflow=False)
             except RuntimeError:
                 print("ERROR: Listener audio device disconnected.")
                 os._exit(0)
 
             if _listener_needs_reset:
                 reset_wake_model(wake_model)
+                _wake_buf.clear()
+                _was_speech = False
                 _listener_needs_reset = False
 
             if _listener_suppress or _wake_detected.is_set():
                 continue
 
-            audio_data = np.frombuffer(data, dtype=np.int16)
+            # VAD gate: only run wake word inference during speech
+            audio_512 = np.frombuffer(data, dtype=np.int16)
+            vad_float = audio_512.astype(np.float32) / 32768.0
+            speech_prob = vad_model(torch.from_numpy(vad_float), RATE).item()
+            is_speech = speech_prob >= VAD_THRESHOLD
+
+            if not is_speech:
+                if _was_speech:
+                    _wake_buf.clear()
+                    reset_wake_model(wake_model)
+                _was_speech = False
+                continue
+
+            if not _was_speech:
+                reset_wake_model(wake_model)
+                _wake_buf.clear()
+            _was_speech = True
+            _wake_buf.extend(data)
+
+            # Wait until we have a full wake word chunk (CHUNK samples = CHUNK*2 bytes)
+            if len(_wake_buf) < CHUNK * 2:
+                continue
+
+            wake_data = bytes(_wake_buf[:CHUNK * 2])
+            del _wake_buf[:CHUNK * 2]
+            audio_data = np.frombuffer(wake_data, dtype=np.int16)
             prediction = wake_model.predict(audio_data)
             for _model_name, score in prediction.items():
                 if score > WAKE_WORD_THRESHOLD:
@@ -1970,7 +2003,7 @@ def main():
 
     # Start always-on background listener
     threading.Thread(
-        target=_always_on_listener, args=(bg_wake_model,), daemon=True
+        target=_always_on_listener, args=(bg_wake_model, vad_model), daemon=True
     ).start()
 
     # Start Telegram bot if configured
@@ -2072,23 +2105,59 @@ def main():
     skip_wake_word = False
     # Keep a rolling buffer of recent audio chunks so we can capture speech
     # that starts immediately after (or overlapping with) the wake word.
-    # 20 chunks × 80ms = 1600ms of pre-roll audio.
-    pre_roll_buf = deque(maxlen=20)
+    # 50 VAD chunks × 32ms = 1600ms of pre-roll audio.
+    pre_roll_buf = deque(maxlen=50)
+    _wake_buf = bytearray()   # accumulates VAD-sized chunks up to one wake word chunk
+    _was_speech = False        # VAD gate state for idle loop
+    import torch as _torch_ww  # for VAD gating in idle loop
     _iter_count = 0
     while True:
         # Suppress bg listener during idle — main loop handles wake word detection.
         # It will be re-enabled when Claude processing starts.
         _listener_suppress = True
         if not skip_wake_word:
-            # Read audio chunk for wake word detection
+            # Read audio at VAD chunk resolution (32ms) for efficient gating
             try:
-                data = stream.read(CHUNK, exception_on_overflow=False)
+                data = stream.read(VAD_CHUNK, exception_on_overflow=False)
             except RuntimeError:
                 print("ERROR: Audio device disconnected.")
                 print("Exiting — check PulseAudio/PipeWire configuration.")
                 os._exit(0)
             pre_roll_buf.append(data)
-            audio_data = np.frombuffer(data, dtype=np.int16)
+
+            # VAD gate: skip wake word inference when no speech is present
+            audio_512 = np.frombuffer(data, dtype=np.int16)
+            vad_float = audio_512.astype(np.float32) / 32768.0
+            speech_prob = vad_model(_torch_ww.from_numpy(vad_float), RATE).item()
+            is_speech = speech_prob >= VAD_THRESHOLD
+
+            if not is_speech:
+                if _was_speech:
+                    _wake_buf.clear()
+                    reset_wake_model(wake_model)
+                _was_speech = False
+                if _queue_ready_event.is_set():
+                    _queue_ready_event.clear()
+                    _process_queue(tts_voice, speak_and_clear)
+                continue
+
+            if not _was_speech:
+                reset_wake_model(wake_model)
+                _wake_buf.clear()
+            _was_speech = True
+            _wake_buf.extend(data)
+
+            # Wait until we have a full wake word chunk (CHUNK samples = CHUNK*2 bytes)
+            if len(_wake_buf) < CHUNK * 2:
+                if _queue_ready_event.is_set():
+                    _queue_ready_event.clear()
+                    _process_queue(tts_voice, speak_and_clear)
+                continue
+
+            # Extract and run wake word model on one full chunk
+            wake_data = bytes(_wake_buf[:CHUNK * 2])
+            del _wake_buf[:CHUNK * 2]
+            audio_data = np.frombuffer(wake_data, dtype=np.int16)
 
             # Feed to wake word detector
             prediction = wake_model.predict(audio_data)
@@ -2110,13 +2179,15 @@ def main():
             debug_log(DEBUG_RECORDING, f"=== iteration {_iter_count} START (wake word detected) ===")
             _iter_start = time.perf_counter()
             print("\n*** Wake word detected! ***")
-            # Keep the last 12 chunks (~960ms) of pre-roll. The wake word
+            # Keep the last 30 VAD chunks (~960ms) of pre-roll. The wake word
             # model has detection latency (~200-300ms after the word ends),
             # so we need enough buffer to capture speech that starts right
             # after the wake word. _strip_wake_prefix() handles any wake
             # word text that ends up in the transcription.
-            while len(pre_roll_buf) > 12:
+            while len(pre_roll_buf) > 30:
                 pre_roll_buf.popleft()
+            _was_speech = False  # reset VAD state for next idle cycle
+            _wake_buf.clear()
         else:
             _iter_count += 1
             _iter_start = time.perf_counter()
