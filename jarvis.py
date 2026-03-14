@@ -12,6 +12,7 @@ import os
 from queue import Queue, Empty
 import random
 import re
+import select
 import signal
 import subprocess
 import sys
@@ -1409,15 +1410,105 @@ def schedule_queue_processing(reset_time):
     _queue_timer.start()
 
 
+# ---------------------------------------------------------------------------
+# Network connectivity monitor (GNOME/NetworkManager via Gio.NetworkMonitor)
+# ---------------------------------------------------------------------------
+
+_network_online = True  # Assume online at startup; updated by monitor
+_network_monitor_alive = False  # True once GLib loop is running
+
+def _http_probe(timeout=5):
+    """Fallback connectivity check via HTTP. Returns True if internet is reachable."""
+    import urllib.request
+    try:
+        urllib.request.urlopen("http://nmcheck.gnome.org/check_network_status.txt", timeout=timeout)
+        return True
+    except Exception:
+        return False
+
+def _start_network_monitor():
+    """Start a Gio.NetworkMonitor in a background GLib main loop.
+
+    Updates _network_online and fires _queue_ready_event when connectivity
+    is restored so queued prompts get processed.
+
+    If Gio is unavailable or the GLib loop dies, is_online() falls back to
+    an HTTP probe so connectivity detection is never silently broken.
+    """
+    global _network_online, _network_monitor_alive
+    try:
+        import gi
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio, GLib
+    except (ImportError, ValueError) as e:
+        error_logger.error("Gio not available — network monitoring will use HTTP fallback: %s", e)
+        print(f"WARNING: Gio not available ({e}) — using HTTP fallback for connectivity")
+        return
+
+    monitor = Gio.NetworkMonitor.get_default()
+    _network_online = monitor.get_network_available()
+    connectivity = monitor.get_connectivity()
+    # Gio.NetworkConnectivity.FULL == 4
+    if connectivity.real < 4:
+        _network_online = False
+    debug_log(DEBUG_CLAUDE, f"network monitor: initial online={_network_online} connectivity={connectivity.value_nick}")
+
+    def on_network_changed(mon, network_available):
+        global _network_online
+        connectivity = mon.get_connectivity()
+        was_online = _network_online
+        # Consider online only if full connectivity (not portal/limited)
+        _network_online = network_available and connectivity.real >= 4
+        status = connectivity.value_nick
+        debug_log(DEBUG_CLAUDE, f"network monitor: available={network_available} connectivity={status} online={_network_online}")
+        if _network_online and not was_online:
+            print(f"Network connectivity restored ({status})")
+            # Trigger queue processing for any prompts queued while offline
+            _queue_ready_event.set()
+        elif not _network_online and was_online:
+            print(f"Network connectivity lost ({status})")
+
+    monitor.connect("network-changed", on_network_changed)
+
+    # Run GLib main loop in a daemon thread to receive signals
+    def _glib_loop():
+        global _network_monitor_alive
+        _network_monitor_alive = True
+        try:
+            GLib.MainLoop().run()
+        except Exception as e:
+            error_logger.error("GLib main loop crashed: %s", e)
+        finally:
+            _network_monitor_alive = False
+            error_logger.error("GLib main loop exited — network monitor is no longer active")
+
+    glib_thread = threading.Thread(target=_glib_loop, daemon=True)
+    glib_thread.start()
+
+
+def is_online():
+    """Return True if network connectivity is available.
+
+    Uses Gio.NetworkMonitor when the GLib loop is alive, otherwise falls back
+    to an HTTP probe so a dead monitor never silently blocks prompts.
+    """
+    if _network_monitor_alive:
+        return _network_online
+    # Fallback: Gio unavailable or GLib loop died — do a direct HTTP check
+    return _http_probe()
+
+
 def _process_queue(tts_voice, speak_and_clear_fn):
     """Drain the queue, sending each prompt to Claude and speaking the response."""
+    if not is_online():
+        return
     clear_queue_reset_time()
     q = load_queue()
     if not q:
         return
     total = len(q)
     if total == 1:
-        speak_and_clear_fn("The rate limit has lifted. Processing your queued request now.")
+        speak_and_clear_fn("Back online. Processing your queued request now.")
     else:
         speak_and_clear_fn(f"The rate limit has lifted. Processing {total} queued requests now.")
     processed = 0
@@ -1584,6 +1675,140 @@ SESSION_ID = str(uuid.uuid4())
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# ---------------------------------------------------------------------------
+# Session file watcher — monitors Claude's session JSONL via Linux inotify
+# to extract thinking messages in real-time.
+# ---------------------------------------------------------------------------
+
+def _claude_session_path():
+    """Return the path to Claude's session JSONL file for the current session."""
+    cwd = os.path.abspath(SCRIPT_DIR)
+    project_dir = cwd.replace("/", "-")
+    return os.path.join(
+        os.path.expanduser("~"), ".claude", "projects", project_dir,
+        f"{SESSION_ID}.jsonl"
+    )
+
+
+def _summarize_thinking(text, max_len=120):
+    """Extract a short speakable summary from a thinking block."""
+    if not text:
+        return None
+    # Take the first sentence
+    for delim in (". ", ".\n", "!\n", "?\n", "! ", "? "):
+        idx = text.find(delim)
+        if 0 < idx < max_len:
+            return text[:idx + 1]
+    # No sentence boundary — truncate at word boundary
+    if len(text) > max_len:
+        trunc = text[:max_len].rsplit(" ", 1)[0]
+        return trunc + "..." if trunc else text[:max_len] + "..."
+    return text
+
+
+class SessionFileWatcher:
+    """Watch Claude's session JSONL file for new thinking blocks using inotify.
+
+    Runs in a background thread and pushes thinking summaries to a queue.
+    Uses Linux inotify syscalls via ctypes (no external packages needed).
+    """
+
+    # inotify constants
+    IN_MODIFY = 0x00000002
+    IN_CREATE = 0x00000100
+
+    def __init__(self, status_queue):
+        self._queue = status_queue
+        self._stop = threading.Event()
+        self._thread = None
+        self._session_path = _claude_session_path()
+        self._file_pos = 0
+
+    def start(self):
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2.0)
+
+    def _read_new_lines(self):
+        """Read any new lines appended since last read."""
+        try:
+            with open(self._session_path, "r") as f:
+                f.seek(self._file_pos)
+                new_data = f.read()
+                self._file_pos = f.tell()
+            return new_data
+        except FileNotFoundError:
+            return ""
+
+    def _process_lines(self, data):
+        """Parse JSONL lines and push thinking summaries to the queue."""
+        for line in data.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") != "assistant":
+                continue
+            for block in event.get("message", {}).get("content", []):
+                if block.get("type") == "thinking":
+                    summary = _summarize_thinking(block.get("thinking", ""))
+                    if summary:
+                        debug_log(DEBUG_CLAUDE, f"  thinking (from session file): {summary[:80]}")
+                        self._queue.put(f"Thinking: {summary}")
+
+    def _run(self):
+        """Main watcher loop using Linux inotify."""
+        # Wait for the session file to exist (Claude creates it on first call)
+        watch_dir = os.path.dirname(self._session_path)
+        os.makedirs(watch_dir, exist_ok=True)
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        inotify_init = libc.inotify_init
+        inotify_init.restype = ctypes.c_int
+        inotify_add_watch = libc.inotify_add_watch
+        inotify_add_watch.restype = ctypes.c_int
+        inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+
+        fd = inotify_init()
+        if fd < 0:
+            return
+
+        try:
+            # Watch the directory for CREATE (file appears) and the file for MODIFY
+            dir_wd = inotify_add_watch(
+                fd, watch_dir.encode(), self.IN_CREATE | self.IN_MODIFY
+            )
+
+            # If file already exists, skip to end
+            if os.path.exists(self._session_path):
+                self._file_pos = os.path.getsize(self._session_path)
+
+            buf_size = 4096
+            while not self._stop.is_set():
+                # Use select with timeout so we can check _stop
+                readable, _, _ = select.select([fd], [], [], 0.5)
+                if not readable:
+                    continue
+                buf = os.read(fd, buf_size)
+                if not buf:
+                    continue
+                # We got an inotify event — read new content from the file
+                if os.path.exists(self._session_path):
+                    new_data = self._read_new_lines()
+                    if new_data:
+                        self._process_lines(new_data)
+        finally:
+            os.close(fd)
+
+
 _logs_dir = os.path.join(SCRIPT_DIR, "logs")
 os.makedirs(_logs_dir, exist_ok=True)
 
@@ -1630,6 +1855,7 @@ def send_to_claude(text, status_queue=None, first_call=[True], proc_holder=None)
     print(f"\n> {text}\n")
     debug_log(DEBUG_CLAUDE, f"send_to_claude — started, prompt: '{text[:80]}'")
     t_claude_start = time.perf_counter()
+    watcher = None
     try:
         env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
         cmd = ["claude", "-p", "--dangerously-skip-permissions",
@@ -1640,6 +1866,11 @@ def send_to_claude(text, status_queue=None, first_call=[True], proc_holder=None)
         else:
             cmd += ["--resume", SESSION_ID]
         cmd.append(text)
+
+        # Start session file watcher for thinking messages
+        if status_queue:
+            watcher = SessionFileWatcher(status_queue)
+            watcher.start()
 
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1714,10 +1945,14 @@ def send_to_claude(text, status_queue=None, first_call=[True], proc_holder=None)
             return "Error: Claude Code timed out."
         error_logger.error("Claude error: %s", e)
         return f"Error: {e}"
+    finally:
+        if watcher:
+            watcher.stop()
 
 
 def main():
     global _listener_suppress, _listener_needs_reset
+    _start_network_monitor()
     wake_model, whisper_model, tts_voice, vad_model = load_models()
 
     # Load a separate wake word model for the background listener thread.
@@ -2093,6 +2328,17 @@ def main():
 
         print(f"Transcribed: {text}")
         conversation_logger.info("USER: %s", text)
+
+        # Check network connectivity — queue if offline
+        if not is_online():
+            print("Network offline — queuing prompt")
+            q = queue_add(text)
+            n = len(q)
+            msg = "I'm currently offline. Your request has been queued and I'll process it when connectivity is restored."
+            if n > 1:
+                msg += f" There are now {n} prompts in the queue."
+            speak_and_clear(msg)
+            continue
 
         # Send to Claude, with a spoken filler if it takes too long.
         # proc_holder lets us kill Claude mid-processing if user says "stop".

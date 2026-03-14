@@ -27,7 +27,7 @@ for arg in "$@"; do
 done
 
 # --- System dependencies ---
-SYSTEM_PKGS=(libpulse0 alsa-utils ffmpeg)
+SYSTEM_PKGS=(libpulse0 alsa-utils ffmpeg inotify-tools)
 missing_pkgs=()
 for pkg in "${SYSTEM_PKGS[@]}"; do
     if ! dpkg -s "$pkg" &>/dev/null; then
@@ -129,4 +129,24 @@ else
     echo "GPU: Skipped (--cpu-only)"
 fi
 
+# --- systemd user service ---
+SERVICE_DIR="$HOME/.config/systemd/user"
+SERVICE_DEST="$SERVICE_DIR/jarvis.service"
+SERVICE_SRC="$SCRIPT_DIR/jarvis.service"
+
+mkdir -p "$SERVICE_DIR"
+
+if [ ! -f "$SERVICE_DEST" ] || ! diff -q "$SERVICE_SRC" "$SERVICE_DEST" &>/dev/null; then
+    echo "Installing systemd user service..."
+    cp "$SERVICE_SRC" "$SERVICE_DEST"
+    systemctl --user daemon-reload
+fi
+
+if ! systemctl --user is-enabled jarvis &>/dev/null; then
+    echo "Enabling jarvis service (start on login)..."
+    systemctl --user enable jarvis
+fi
+
 echo "Setup OK — all dependencies present."
+echo "To start now: systemctl --user start jarvis"
+echo "To view logs: journalctl --user -u jarvis -f"
