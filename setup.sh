@@ -50,8 +50,8 @@ fi
 source venv/bin/activate
 
 # --- Core Python packages ---
-PY_PACKAGES=(openwakeword faster_whisper numpy piper telegram)
-PIP_NAMES=(openwakeword faster-whisper numpy piper-tts python-telegram-bot)
+PY_PACKAGES=(openwakeword faster_whisper numpy piper telegram silero_vad)
+PIP_NAMES=(openwakeword faster-whisper numpy piper-tts python-telegram-bot silero-vad)
 missing_pip=()
 for i in "${!PY_PACKAGES[@]}"; do
     if ! python -c "import ${PY_PACKAGES[$i]}" &>/dev/null; then
