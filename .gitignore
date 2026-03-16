@@ -1,4 +1,4 @@
-venv/
+venv-*/
 voices/*.onnx
 voices/*.onnx.json
 voices/*.bin
@@ -6,3 +6,4 @@ __pycache__/
 logs/
 .cache/
 config/secrets.ini
+.gpu-setup-stamp

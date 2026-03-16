@@ -47,17 +47,18 @@ if [ ${#missing_pkgs[@]} -gt 0 ]; then
     sudo apt-get install -y "${missing_pkgs[@]}"
 fi
 
-# --- Python venv ---
-if [ ! -d venv ]; then
-    echo "Creating Python virtual environment..."
-    python3 -m venv venv
+# --- Python venv (per-architecture to avoid binary mismatch on shared filesystems) ---
+VENV_DIR="venv-$(uname -m)"
+if [ ! -d "$VENV_DIR" ]; then
+    echo "Creating Python virtual environment ($VENV_DIR)..."
+    python3 -m venv "$VENV_DIR"
 fi
 
-source venv/bin/activate
+source "$VENV_DIR/bin/activate"
 
 # --- Core Python packages ---
-PY_PACKAGES=(openwakeword faster_whisper numpy piper telegram silero_vad)
-PIP_NAMES=(openwakeword faster-whisper numpy piper-tts python-telegram-bot silero-vad)
+PY_PACKAGES=(openwakeword faster_whisper numpy piper telegram silero_vad transformers)
+PIP_NAMES=(openwakeword faster-whisper numpy piper-tts python-telegram-bot silero-vad transformers)
 missing_pip=()
 for i in "${!PY_PACKAGES[@]}"; do
     if ! python -c "import ${PY_PACKAGES[$i]}" &>/dev/null; then
@@ -87,7 +88,11 @@ if [ ${#missing_pip[@]} -gt 0 ]; then
 fi
 
 # --- GPU detection & acceleration packages ---
-if [ "$CPU_ONLY" -eq 0 ]; then
+GPU_STAMP="$SCRIPT_DIR/.gpu-setup-stamp"
+
+if [ "$CPU_ONLY" -eq 1 ]; then
+    echo "GPU: Skipped (--cpu-only)"
+else
     ARCH=$(uname -m)
 
     # Detect environment
@@ -104,65 +109,77 @@ if [ "$CPU_ONLY" -eq 0 ]; then
         lspci 2>/dev/null | grep -iE '(vga|3d|display)' | grep -iq 'nvidia' && HAS_NVIDIA_GPU=1
     fi
 
-    # --- DirectML (WSL2 with GPU passthrough: Qualcomm Adreno, AMD, NVIDIA via D3D12) ---
-    # onnxruntime-directml and onnxruntime conflict; swap if needed.
-    INSTALL_DIRECTML=0
-    if [ "$FORCE_DIRECTML" -eq 1 ]; then
-        INSTALL_DIRECTML=1
-        echo "GPU: DirectML forced via --force-directml"
-    elif [ "$IS_WSL" -eq 1 ] && [ "$HAS_DXG" -eq 1 ]; then
-        INSTALL_DIRECTML=1
-        echo "GPU: WSL2 with GPU passthrough detected (/dev/dxg) -- installing onnxruntime-directml"
-    fi
+    # Build a string describing the current GPU environment
+    GPU_ENV="wsl=${IS_WSL},dxg=${HAS_DXG},intel=${HAS_INTEL_GPU},nvidia=${HAS_NVIDIA_GPU},arch=${ARCH},force_dm=${FORCE_DIRECTML},force_ov=${FORCE_OPENVINO},force_cu=${FORCE_CUDA}"
 
-    if [ "$INSTALL_DIRECTML" -eq 1 ]; then
-        if ! python -c "import onnxruntime as ort; assert 'DmlExecutionProvider' in ort.get_available_providers()" &>/dev/null; then
-            # onnxruntime-directml conflicts with plain onnxruntime -- try swapping.
-            # Note: the pip package is Windows-only; on Linux (including WSL2) it is not
-            # published, so we fall back to plain onnxruntime which uses CPU only.
-            pip show onnxruntime &>/dev/null && pip uninstall -y onnxruntime || true
-            if pip install onnxruntime-directml 2>/dev/null; then
-                echo "GPU: onnxruntime-directml installed (DmlExecutionProvider active)"
-            else
-                echo "GPU: onnxruntime-directml not available for this platform -- falling back to plain onnxruntime (CPU only)"
-                pip show onnxruntime &>/dev/null || pip install onnxruntime
+    # Skip GPU setup if environment matches the last successful run
+    STAMP_CONTENT=""
+    [ -f "$GPU_STAMP" ] && STAMP_CONTENT=$(cat "$GPU_STAMP")
+
+    if [ "$STAMP_CONTENT" = "$GPU_ENV" ]; then
+        echo "GPU: Environment unchanged -- skipping GPU setup (delete .gpu-setup-stamp to force)"
+    else
+        # --- DirectML (WSL2 with GPU passthrough: Qualcomm Adreno, AMD, NVIDIA via D3D12) ---
+        # onnxruntime-directml and onnxruntime conflict; swap if needed.
+        INSTALL_DIRECTML=0
+        if [ "$FORCE_DIRECTML" -eq 1 ]; then
+            INSTALL_DIRECTML=1
+            echo "GPU: DirectML forced via --force-directml"
+        elif [ "$IS_WSL" -eq 1 ] && [ "$HAS_DXG" -eq 1 ]; then
+            INSTALL_DIRECTML=1
+            echo "GPU: WSL2 with GPU passthrough detected (/dev/dxg) -- installing onnxruntime-directml"
+        fi
+
+        if [ "$INSTALL_DIRECTML" -eq 1 ]; then
+            if ! python -c "import onnxruntime as ort; assert 'DmlExecutionProvider' in ort.get_available_providers()" &>/dev/null; then
+                # onnxruntime-directml conflicts with plain onnxruntime -- try swapping.
+                # Note: the pip package is Windows-only; on Linux (including WSL2) it is not
+                # published, so we fall back to plain onnxruntime which uses CPU only.
+                pip show onnxruntime &>/dev/null && pip uninstall -y onnxruntime || true
+                if pip install onnxruntime-directml 2>/dev/null; then
+                    echo "GPU: onnxruntime-directml installed (DmlExecutionProvider active)"
+                else
+                    echo "GPU: onnxruntime-directml not available for this platform -- falling back to plain onnxruntime (CPU only)"
+                    pip show onnxruntime &>/dev/null || pip install onnxruntime
+                fi
             fi
         fi
-    fi
 
-    # --- OpenVINO (Intel GPU or x86_64 CPU acceleration; skip on ARM/Qualcomm) ---
-    # Not installed when DirectML is already handling acceleration.
-    INSTALL_OPENVINO=0
-    if [ "$INSTALL_DIRECTML" -eq 0 ]; then
-        if [ "$FORCE_OPENVINO" -eq 1 ]; then
-            INSTALL_OPENVINO=1
-            echo "GPU: OpenVINO forced via --force-openvino"
-        elif [ "$HAS_INTEL_GPU" -eq 1 ]; then
-            INSTALL_OPENVINO=1
-            echo "GPU: Intel GPU detected -- installing OpenVINO for GPU+CPU acceleration"
-        elif [ "$ARCH" = "x86_64" ]; then
-            INSTALL_OPENVINO=1
-            echo "GPU: x86_64 CPU supports OpenVINO CPU acceleration"
+        # --- OpenVINO (Intel GPU or x86_64 CPU acceleration; skip on ARM/Qualcomm) ---
+        # Not installed when DirectML is already handling acceleration.
+        INSTALL_OPENVINO=0
+        if [ "$INSTALL_DIRECTML" -eq 0 ]; then
+            if [ "$FORCE_OPENVINO" -eq 1 ]; then
+                INSTALL_OPENVINO=1
+                echo "GPU: OpenVINO forced via --force-openvino"
+            elif [ "$HAS_INTEL_GPU" -eq 1 ]; then
+                INSTALL_OPENVINO=1
+                echo "GPU: Intel GPU detected -- installing OpenVINO for GPU+CPU acceleration"
+            elif [ "$ARCH" = "x86_64" ]; then
+                INSTALL_OPENVINO=1
+                echo "GPU: x86_64 CPU supports OpenVINO CPU acceleration"
+            fi
         fi
-    fi
 
-    if [ "$INSTALL_OPENVINO" -eq 1 ]; then
-        ov_missing=()
-        python -c "from optimum.intel import OVModelForSpeechSeq2Seq" &>/dev/null || ov_missing+=("optimum-intel[openvino]")
-        python -c "import transformers" &>/dev/null || ov_missing+=("transformers")
-        if [ ${#ov_missing[@]} -gt 0 ]; then
-            echo "Installing OpenVINO packages: ${ov_missing[*]}"
-            pip install "${ov_missing[@]}"
+        if [ "$INSTALL_OPENVINO" -eq 1 ]; then
+            ov_missing=()
+            python -c "from optimum.intel import OVModelForSpeechSeq2Seq" &>/dev/null || ov_missing+=("optimum-intel[openvino]")
+            python -c "import transformers" &>/dev/null || ov_missing+=("transformers")
+            if [ ${#ov_missing[@]} -gt 0 ]; then
+                echo "Installing OpenVINO packages: ${ov_missing[*]}"
+                pip install "${ov_missing[@]}"
+            fi
         fi
-    fi
 
-    # --- CUDA (future support) ---
-    if [ "$FORCE_CUDA" -eq 1 ] || [ "$HAS_NVIDIA_GPU" -eq 1 ]; then
-        echo "GPU: NVIDIA GPU detected -- CUDA STT support not yet implemented"
-        # Future: pip install faster-whisper[cuda] or similar
+        # --- CUDA (future support) ---
+        if [ "$FORCE_CUDA" -eq 1 ] || [ "$HAS_NVIDIA_GPU" -eq 1 ]; then
+            echo "GPU: NVIDIA GPU detected -- CUDA STT support not yet implemented"
+            # Future: pip install faster-whisper[cuda] or similar
+        fi
+
+        # Record current environment so next startup can skip this block
+        echo "$GPU_ENV" > "$GPU_STAMP"
     fi
-else
-    echo "GPU: Skipped (--cpu-only)"
 fi
 
 # --- systemd user service ---
