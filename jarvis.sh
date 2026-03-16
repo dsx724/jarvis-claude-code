@@ -4,7 +4,7 @@ cd "$SCRIPT_DIR/agents/jarvis"
 
 # Ensure all dependencies are installed before starting
 "$SCRIPT_DIR/setup.sh"
-source "$SCRIPT_DIR/venv/bin/activate"
+source "$SCRIPT_DIR/venv-$(uname -m)/bin/activate"
 
 trap 'kill -INT $PID 2>/dev/null; wait $PID 2>/dev/null; exit 0' INT TERM
 
