@@ -201,5 +201,7 @@ if ! systemctl --user is-enabled jarvis &>/dev/null; then
 fi
 
 echo "Setup OK — all dependencies present."
-echo "To start now: systemctl --user start jarvis"
-echo "To view logs: journalctl --user -u jarvis -f"
+if [ -z "$INVOCATION_ID" ]; then
+    echo "To start now: systemctl --user start jarvis"
+    echo "To view logs: journalctl --user -u jarvis -f"
+fi
