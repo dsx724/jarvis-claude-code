@@ -290,31 +290,31 @@ def _resolve_stt_auto(model_name):
     print("STT auto-detect: benchmarking backends...")
     audio_path = _generate_bench_audio()
     results = {}
+    try:
+        # faster-whisper CPU (always available)
+        print("  faster-whisper CPU...", end=" ", flush=True)
+        fw_time = _bench_faster_whisper(model_name, audio_path)
+        if fw_time is not None:
+            results[("faster-whisper", None)] = fw_time
+            print(f"{fw_time*1000:.0f} ms")
 
-    # faster-whisper CPU (always available)
-    print("  faster-whisper CPU...", end=" ", flush=True)
-    fw_time = _bench_faster_whisper(model_name, audio_path)
-    if fw_time is not None:
-        results[("faster-whisper", None)] = fw_time
-        print(f"{fw_time*1000:.0f} ms")
+        # OpenVINO: CPU + any GPU devices
+        if _HAS_OPENVINO:
+            try:
+                cache_dir = _ensure_openvino_cache(model_name)
+                ov_gpu_devs = [d for b, d in gpu_devices if b == "openvino"]
+                for dev in ["CPU"] + ov_gpu_devs:
+                    print(f"  openvino {dev}...", end=" ", flush=True)
+                    ov_time = _bench_openvino_device(cache_dir, dev, audio_path)
+                    if ov_time is not None:
+                        results[("openvino", dev)] = ov_time
+                        print(f"{ov_time*1000:.0f} ms")
+            except Exception as e:
+                print(f"  openvino setup failed: {e}")
 
-    # OpenVINO: CPU + any GPU devices
-    if _HAS_OPENVINO:
-        try:
-            cache_dir = _ensure_openvino_cache(model_name)
-            ov_gpu_devs = [d for b, d in gpu_devices if b == "openvino"]
-            for dev in ["CPU"] + ov_gpu_devs:
-                print(f"  openvino {dev}...", end=" ", flush=True)
-                ov_time = _bench_openvino_device(cache_dir, dev, audio_path)
-                if ov_time is not None:
-                    results[("openvino", dev)] = ov_time
-                    print(f"{ov_time*1000:.0f} ms")
-        except Exception as e:
-            print(f"  openvino setup failed: {e}")
-
-    # CUDA (future): would add _bench_cuda_whisper here
-
-    os.unlink(audio_path)
+        # CUDA (future): would add _bench_cuda_whisper here
+    finally:
+        os.unlink(audio_path)
 
     if not results:
         print("STT auto-detect: no backends available, defaulting to faster-whisper")
@@ -375,16 +375,16 @@ def _resolve_stt_openvino_device(model_name):
 
     best_device = "CPU"
     best_time = float("inf")
-
-    for dev in candidates:
-        ov_time = _bench_openvino_device(cache_dir, dev, audio_path)
-        if ov_time is not None:
-            print(f"  {dev}: {ov_time*1000:.0f} ms")
-            if ov_time < best_time:
-                best_time = ov_time
-                best_device = dev
-
-    os.unlink(audio_path)
+    try:
+        for dev in candidates:
+            ov_time = _bench_openvino_device(cache_dir, dev, audio_path)
+            if ov_time is not None:
+                print(f"  {dev}: {ov_time*1000:.0f} ms")
+                if ov_time < best_time:
+                    best_time = ov_time
+                    best_device = dev
+    finally:
+        os.unlink(audio_path)
 
     # Cache result
     os.makedirs(os.path.dirname(cache_file), exist_ok=True)
@@ -1599,6 +1599,7 @@ def speak(tts_voice, text, interrupt_event=None, keep_wake_word=False):
     except RuntimeError as e:
         print(f"ERROR: No audio output device available ({e})")
         print("Exiting — check PulseAudio/PipeWire configuration.")
+        _flush_logs()
         os._exit(0)
     interrupted = False
     # Write audio in small sub-chunks so we can check for interrupts frequently.
@@ -1648,6 +1649,7 @@ def _always_on_listener(wake_model, vad_model):
     except RuntimeError as e:
         print(f"ERROR: Listener failed to open audio input ({e})")
         print("Exiting — check PulseAudio/PipeWire configuration.")
+        _flush_logs()
         os._exit(0)
     _wake_buf = bytearray()
     _was_speech = False
@@ -1657,6 +1659,7 @@ def _always_on_listener(wake_model, vad_model):
                 data = listener.read(VAD_CHUNK, exception_on_overflow=False)
             except RuntimeError:
                 print("ERROR: Listener audio device disconnected.")
+                _flush_logs()
                 os._exit(0)
 
             if _listener_needs_reset:
@@ -1875,6 +1878,21 @@ _conv_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
 conversation_logger.addHandler(_conv_handler)
 
 
+def _flush_logs():
+    """Flush all log handlers to prevent data loss before os._exit()."""
+    for handler in error_logger.handlers + conversation_logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+    if _debug_logger is not None:
+        for handler in _debug_logger.handlers:
+            try:
+                handler.flush()
+            except Exception:
+                pass
+
+
 def _tool_status(tool_name, tool_input):
     """Convert a Claude tool_use event into a short speakable status string."""
     if tool_name == "Read":
@@ -2041,16 +2059,24 @@ def main():
     except RuntimeError as e:
         print(f"ERROR: No audio input device available ({e})")
         print("Exiting — check PulseAudio/PipeWire configuration.")
+        _flush_logs()
         os._exit(0)
+
+    def cleanup():
+        """Close resources and flush logs before os._exit()."""
+        stream.close()
+        _flush_logs()
 
     def shutdown(sig, frame):
         print("\nShutting down...")
         speak(tts_voice, random.choice(SHUTDOWN_MESSAGES), keep_wake_word=True)
+        cleanup()
         os._exit(0)
 
     def restart(sig, frame):
         print("\nRestarting (waiting for TTS to finish)...")
         _tts_lock.acquire()  # wait for any in-progress speech to complete
+        cleanup()
         os._exit(42)
 
     signal.signal(signal.SIGINT, shutdown)
@@ -2138,6 +2164,7 @@ def main():
             except RuntimeError:
                 print("ERROR: Audio device disconnected.")
                 print("Exiting — check PulseAudio/PipeWire configuration.")
+                cleanup()
                 os._exit(0)
             pre_roll_buf.append(data)
 
@@ -2290,6 +2317,7 @@ def main():
             print(f"Transcribed: {text}")
             print("Built-in command: shutdown")
             speak(tts_voice, "Shutting down. Goodbye.")
+            cleanup()
             os._exit(0)
 
         if text_lower in ("restart", "restart yourself", f"restart {wn_lower}",
@@ -2297,6 +2325,7 @@ def main():
             print(f"Transcribed: {text}")
             print("Built-in command: restart")
             speak(tts_voice, "Restarting now.")
+            cleanup()
             os._exit(42)
 
         if text_lower in ("revert", "revert yourself", f"revert {wn_lower}",
@@ -2322,6 +2351,7 @@ def main():
                 print(f"git revert error: {revert.stderr}")
                 continue
             speak(tts_voice, f"Reverted commit {short_hash}. Restarting now.")
+            cleanup()
             os._exit(42)
 
         if text_lower in ("upgrade", "update", "upgrade yourself",
@@ -2369,6 +2399,7 @@ def main():
                 speak_and_clear("Already up to date.")
                 continue
             speak(tts_voice, "Updated. Restarting now.")
+            cleanup()
             os._exit(42)
 
         if text_lower in ("queue", "cue", "q"):
