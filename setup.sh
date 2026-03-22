@@ -185,13 +185,19 @@ fi
 # --- systemd user service ---
 SERVICE_DIR="$HOME/.config/systemd/user"
 SERVICE_DEST="$SERVICE_DIR/jarvis.service"
-SERVICE_SRC="$SCRIPT_DIR/jarvis.service"
+SERVICE_TEMPLATE="$SCRIPT_DIR/jarvis.service"
 
 mkdir -p "$SERVICE_DIR"
 
-if [ ! -f "$SERVICE_DEST" ] || ! diff -q "$SERVICE_SRC" "$SERVICE_DEST" &>/dev/null; then
-    echo "Installing systemd user service..."
-    cp "$SERVICE_SRC" "$SERVICE_DEST"
+# Generate service file from template, substituting @@JARVIS_DIR@@ with SCRIPT_DIR.
+# This ensures the service always points to whichever copy of jarvis ran setup.sh,
+# and re-running setup.sh from a different directory updates the service in-place
+# (no duplicate services).
+SERVICE_GENERATED=$(sed "s|@@JARVIS_DIR@@|$SCRIPT_DIR|g" "$SERVICE_TEMPLATE")
+
+if [ ! -f "$SERVICE_DEST" ] || [ "$SERVICE_GENERATED" != "$(cat "$SERVICE_DEST")" ]; then
+    echo "Installing systemd user service (WorkingDirectory=$SCRIPT_DIR)..."
+    echo "$SERVICE_GENERATED" > "$SERVICE_DEST"
     systemctl --user daemon-reload
 fi
 

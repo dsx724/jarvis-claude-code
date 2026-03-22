@@ -4,8 +4,8 @@ After=sound.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/dxue/git/claude/jarvis
-ExecStart=/home/dxue/git/claude/jarvis/jarvis.sh
+WorkingDirectory=@@JARVIS_DIR@@
+ExecStart=@@JARVIS_DIR@@/jarvis.sh
 SyslogIdentifier=jarvis
 Restart=on-failure
 RestartSec=5
